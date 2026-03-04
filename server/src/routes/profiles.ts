@@ -68,7 +68,8 @@ profileRoutes.get('/discover', async (c) => {
 		}
 		try {
 			const profileCells: string[] = JSON.parse(p.geohashCells);
-			return profileCells.some(pc => cells.includes(pc));
+			// Support prefix matching: a query cell "gcpuu" (precision 5) matches profile cell "gcpuuz1" (precision 7)
+			return profileCells.some(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc)));
 		} catch {
 			return false;
 		}
@@ -76,7 +77,7 @@ profileRoutes.get('/discover', async (c) => {
 
 	const results = matching.map(p => {
 		const profileCells: string[] = JSON.parse(p.geohashCells!);
-		const matchedCell = profileCells.find(pc => cells.includes(pc)) ?? profileCells[0];
+		const matchedCell = profileCells.find(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc))) ?? profileCells[0];
 		return {
 			did: p.did,
 			displayName: p.displayName,
