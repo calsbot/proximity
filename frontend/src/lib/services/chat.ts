@@ -389,13 +389,22 @@ export async function sendGroupMediaMessage(
 	const state = get(identityStore);
 	if (!state.identity) throw new Error('No identity');
 
-	const convos = get(conversationsStore);
-	const convo = convos.find(c => c.groupId === groupId);
+	let convos = get(conversationsStore);
+	let convo = convos.find(c => c.groupId === groupId);
 	if (!convo) throw new Error('Group conversation not found');
 
-	const epoch = convo.groupKeyEpoch ?? 0;
-	const groupKey = convo.groupKeys?.[epoch];
-	if (!groupKey) throw new Error('No group key available');
+	let epoch = convo.groupKeyEpoch ?? 0;
+	let groupKey = convo.groupKeys?.[epoch];
+
+	// If no group key, try bootstrapping before giving up
+	if (!groupKey) {
+		await bootstrapGroupKeys(groupId);
+		convos = get(conversationsStore);
+		convo = convos.find(c => c.groupId === groupId);
+		if (!convo) throw new Error('Group conversation not found');
+		epoch = convo.groupKeyEpoch ?? 0;
+		groupKey = convo.groupKeys?.[epoch];
+	}
 
 	// Encrypt the media with a random key
 	const fileData = await fileToUint8Array(file);
@@ -415,8 +424,18 @@ export async function sendGroupMediaMessage(
 		viewOnce,
 	});
 
-	// Encrypt payload with group key and send as group message
-	const encPayload = encryptGroupMessage(payload, groupKey);
+	let ciphertext: string;
+	let nonce: string;
+
+	if (groupKey) {
+		const encPayload = encryptGroupMessage(payload, groupKey);
+		ciphertext = encPayload.ciphertext;
+		nonce = encPayload.nonce;
+	} else {
+		// Fallback: base64 plaintext (matches sendGroupMessage legacy path)
+		ciphertext = btoa(payload);
+		nonce = btoa('group-msg');
+	}
 
 	// Add local message
 	const localMsg: DecryptedMessage = {
@@ -443,8 +462,8 @@ export async function sendGroupMediaMessage(
 				senderDid: state.identity.did,
 				recipientDid,
 				epoch,
-				ciphertext: encPayload.ciphertext,
-				nonce: encPayload.nonce,
+				ciphertext,
+				nonce,
 			});
 		} catch (e) {
 			console.error('Failed to send media message to', recipientDid, e);
@@ -456,8 +475,8 @@ export async function sendGroupMediaMessage(
 		type: 'group_message',
 		groupId,
 		senderDid: state.identity.did,
-		ciphertext: encPayload.ciphertext,
-		nonce: encPayload.nonce,
+		ciphertext,
+		nonce,
 		epoch,
 		memberDids,
 	});
