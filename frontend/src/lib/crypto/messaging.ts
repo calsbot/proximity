@@ -264,10 +264,20 @@ export async function decryptMessage(
 	const messageDhKeyB64 = message.dhPublicKey;
 
 	if (peerDhKeyB64 !== messageDhKeyB64) {
-		// Skip any missed messages on the current receiving chain
-		currentKeys = await skipMessageKeys(currentKeys, currentKeys.recvCounter, message.previousCounter ?? 0);
-		// Perform DH ratchet step
-		currentKeys = await dhRatchetStep(currentKeys, messageDhPublicKey);
+		if (!currentKeys.initialized) {
+			// First message received — accept peer's DH key without ratcheting.
+			// The initial recv chain key is already correct (derived from shared secret).
+			currentKeys = {
+				...currentKeys,
+				peerDhPublicKey: messageDhPublicKey,
+				initialized: true,
+			};
+		} else {
+			// Skip any missed messages on the current receiving chain
+			currentKeys = await skipMessageKeys(currentKeys, currentKeys.recvCounter, message.previousCounter ?? 0);
+			// Perform DH ratchet step
+			currentKeys = await dhRatchetStep(currentKeys, messageDhPublicKey);
+		}
 	}
 
 	// Skip messages if epoch is ahead
