@@ -306,7 +306,9 @@
 		min-height: 44px;
 		justify-content: center;
 	}
-	.row:hover { background: var(--bg-hover); }
+	@media (hover: hover) {
+		.row:hover { background: var(--bg-hover); }
+	}
 	.row-top {
 		display: flex;
 		align-items: center;
@@ -398,12 +400,14 @@
 		justify-content: center;
 		line-height: 1;
 	}
-	.row-wrapper:hover .delete-btn {
-		opacity: 0.5;
-	}
-	.delete-btn:hover {
-		opacity: 1 !important;
-		color: var(--danger);
+	@media (hover: hover) {
+		.row-wrapper:hover .delete-btn {
+			opacity: 0.5;
+		}
+		.delete-btn:hover {
+			opacity: 1 !important;
+			color: var(--danger);
+		}
 	}
 	.delete-confirm {
 		display: flex;

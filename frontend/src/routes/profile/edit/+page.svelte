@@ -431,6 +431,7 @@
 		min-height: 44px;
 		display: flex;
 		align-items: center;
+		justify-content: center;
 	}
 	.upload-btn:hover {
 		background: var(--bg-hover);

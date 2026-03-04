@@ -327,7 +327,8 @@
 		<p class="status">scanning...</p>
 	{:else if locationError}
 		<div class="empty">
-			<p>location access was denied. enable it in your browser settings and try again.</p>
+			<p>couldn't access your location</p>
+			<p class="prompt-detail">make sure location is enabled in your device settings. on iOS, go to Settings &gt; Privacy &gt; Location Services &gt; Chrome</p>
 			<button onclick={enableLocation}>try again</button>
 		</div>
 	{:else if isMapActive}

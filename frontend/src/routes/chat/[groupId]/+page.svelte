@@ -643,8 +643,8 @@
 		<form class="composer" class:has-preview={!!stagedPreviewUrl} onsubmit={(e) => { e.preventDefault(); handleSend(); }}>
 			<input type="file" accept="image/*,video/*" onchange={handleFileAttach} hidden bind:this={fileInput} />
 			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo}>+</button>
-			<input type="text" bind:value={input} placeholder="message..." disabled={!convo || sending} />
-			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>send</button>
+			<input type="text" bind:value={input} placeholder={sending ? "sending..." : "message..."} disabled={!convo || sending} />
+			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>{sending ? 'sending...' : 'send'}</button>
 		</form>
 	{/if}
 </div>

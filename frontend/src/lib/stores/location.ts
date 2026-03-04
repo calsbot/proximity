@@ -47,8 +47,35 @@ export async function requestLocation(precision: number = 7): Promise<void> {
 				});
 				resolve();
 			},
-			() => {
-				locationStore.update((s) => ({ ...s, permission: 'denied' }));
+			(err) => {
+				// PERMISSION_DENIED=1, POSITION_UNAVAILABLE=2, TIMEOUT=3
+				if (err.code === 1) {
+					locationStore.update((s) => ({ ...s, permission: 'denied' }));
+				} else {
+					// position unavailable or timeout — retry once without high accuracy
+					navigator.geolocation.getCurrentPosition(
+						(pos) => {
+							const { latitude, longitude } = pos.coords;
+							const hash = encode(latitude, longitude, precision);
+							const cells = generateDecoyCells(hash, 11);
+							locationStore.set({
+								lat: latitude,
+								lon: longitude,
+								geohash: hash,
+								queryCells: cells,
+								permission: 'granted',
+								precision
+							});
+							resolve();
+						},
+						() => {
+							locationStore.update((s) => ({ ...s, permission: 'denied' }));
+							resolve();
+						},
+						{ enableHighAccuracy: false, timeout: 15000 }
+					);
+					return;
+				}
 				resolve();
 			},
 			{ enableHighAccuracy: true, timeout: 10000 }
