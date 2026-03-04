@@ -1,0 +1,36 @@
+version: "3.7"
+
+services:
+  listmonk-db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: listmonk
+      POSTGRES_USER: listmonk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - listmonk-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  listmonk:
+    image: listmonk/listmonk:latest
+    restart: unless-stopped
+    depends_on:
+      - listmonk-db
+    environment:
+      - LISTMONK_app__address=0.0.0.0:9000
+      - LISTMONK_app__admin_username=${LISTMONK_ADMIN_USER:-admin}
+      - LISTMONK_app__admin_password=${LISTMONK_ADMIN_PASSWORD:-changeme}
+      - LISTMONK_db__host=listmonk-db
+      - LISTMONK_db__port=5432
+      - LISTMONK_db__user=listmonk
+      - LISTMONK_db__password=${POSTGRES_PASSWORD:-changeme}
+      - LISTMONK_db__database=listmonk
+    ports:
+      - "9000:9000"
+    command: >
+      sh -c "sleep 5 && ./listmonk --install --idempotent --yes && ./listmonk"
+
+volumes:
+  listmonk-pgdata:

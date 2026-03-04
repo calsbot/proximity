@@ -1,0 +1,11 @@
+{
+  "name": "proximity",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"cd server && bun run dev\" \"cd frontend && npm run dev\"",
+    "build": "cd frontend && npm run build",
+    "start": "cd frontend && npm run build && cd ../server && bun run src/index.ts",
+    "start:server": "cd server && bun run src/index.ts"
+  }
+}
