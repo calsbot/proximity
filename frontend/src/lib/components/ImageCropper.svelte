@@ -188,7 +188,7 @@
 
 		<div class="cropper-actions">
 			<button class="cancel-btn" onclick={oncancel}>cancel</button>
-			<button class="confirm-btn" onclick={confirmCrop}>$ crop-and-upload</button>
+			<button class="confirm-btn" onclick={confirmCrop}>crop and upload</button>
 		</div>
 	</div>
 </div>

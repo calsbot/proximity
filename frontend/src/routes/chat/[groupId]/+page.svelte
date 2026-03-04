@@ -596,7 +596,7 @@
 									<span class="sender">{senderName(msg)}</span>
 								{/if}
 								{#if msg.mediaId}
-									<button class="bubble media-bubble" class:unseen={!msg.viewed} onclick={() => openMediaViewer(msg)} disabled={msg.viewed && msg.viewOnce}>
+									<button class="bubble media-bubble" class:unseen={msg.isMine && !msg.viewed} onclick={() => openMediaViewer(msg)} disabled={msg.viewed && msg.viewOnce}>
 										{#if msg.viewed}
 											<span class="media-text">opened</span>
 										{:else}
