@@ -200,58 +200,57 @@
 {/if}
 
 <div class="page">
-	<!-- Page title -->
-	<div class="page-header">
-		<span class="page-title">edit profile</span>
-	</div>
-
-	<!-- Avatar -->
-	<div class="avatar-section">
-		{#if avatarUrl}
-			<img src={avatarUrl} alt="avatar" class="avatar" />
-		{:else}
-			<div class="avatar-placeholder">?</div>
-		{/if}
-		<label class="upload-btn">
-			<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
-			{uploading ? 'uploading...' : 'upload photo'}
-		</label>
-		<p class="photo-note">your photo is encrypted locally before upload.</p>
-	</div>
-
-	<div class="divider"></div>
-
-	<!-- Fields -->
-	<div class="fields">
-		<label>
-			<span>display name</span>
-			<input type="text" bind:value={displayName} />
-		</label>
-
-		<label>
-			<span>age</span>
-			<input type="number" bind:value={age} min="18" max="120" />
-		</label>
-
-		<label>
-			<span>bio</span>
-			<textarea bind:value={bio} rows="3" placeholder="tell people about yourself"></textarea>
-		</label>
-
-		<div class="save-status">
-			{#if saving}
-				<span class="status-text">saving...</span>
-			{:else if saved}
-				<span class="status-text success">saved</span>
-			{:else if error}
-				<span class="status-text error">{error}</span>
-			{/if}
+	<!-- Profile edit card -->
+	<div class="card">
+		<div class="card-header">
+			<span class="title">edit profile</span>
 		</div>
+		<div class="card-body">
+			<div class="avatar-section">
+				{#if avatarUrl}
+					<img src={avatarUrl} alt="avatar" class="avatar" />
+				{:else}
+					<div class="avatar-placeholder">?</div>
+				{/if}
+				<label class="upload-btn">
+					<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
+					{uploading ? 'uploading...' : 'upload photo'}
+				</label>
+				<p class="photo-note">Your photo is encrypted locally before upload.</p>
+			</div>
 
-		<button class="backup-btn" onclick={handleBackup}>
-			{backupDownloaded ? 'downloaded!' : 'back up profile'}
-		</button>
-		<span class="backup-note">save your identity file somewhere safe. if you lose it, we can't get it&nbsp;back.</span>
+			<div class="fields">
+				<label>
+					<span>display name</span>
+					<input type="text" bind:value={displayName} />
+				</label>
+
+				<label>
+					<span>age</span>
+					<input type="number" bind:value={age} min="18" max="120" />
+				</label>
+
+				<label>
+					<span>bio</span>
+					<textarea bind:value={bio} rows="3" placeholder="tell people about yourself"></textarea>
+				</label>
+
+				<div class="save-status">
+					{#if saving}
+						<span class="status-text">saving...</span>
+					{:else if saved}
+						<span class="status-text success">saved</span>
+					{:else if error}
+						<span class="status-text error">{error}</span>
+					{/if}
+				</div>
+
+				<button onclick={handleBackup}>
+					{backupDownloaded ? 'downloaded!' : 'back up profile'}
+				</button>
+				<span class="backup-note">save your identity file somewhere safe. if you lose it, we can't get it&nbsp;back.</span>
+			</div>
+		</div>
 	</div>
 
 	<!-- Identity & backup -->
@@ -345,20 +344,6 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.page-title {
-		color: var(--text-muted);
-		font-size: 14px;
-	}
-	.divider {
-		border-top: 1px solid var(--border);
-	}
-
-	/* Collapsible sections */
 	.card {
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -412,8 +397,9 @@
 	.avatar-section {
 		display: flex;
 		flex-direction: column;
-		align-items: center;
+		align-items: flex-start;
 		gap: 12px;
+		margin-bottom: 16px;
 	}
 	.avatar {
 		width: 80px;
@@ -453,9 +439,8 @@
 	}
 	.photo-note {
 		color: var(--text-muted);
-		font-size: 13px;
-		text-align: center;
-		line-height: 1.4;
+		font-size: 12px;
+		line-height: 1.5;
 	}
 
 	/* Fields */
@@ -489,16 +474,6 @@
 	.status-text.error {
 		color: var(--danger);
 	}
-	.backup-btn {
-		border: 1px solid var(--border);
-		background: transparent;
-		color: var(--text);
-	}
-	@media (hover: hover) {
-		.backup-btn:hover {
-			background: var(--bg-hover);
-		}
-	}
 
 	/* Info rows */
 	.info-row {
@@ -519,16 +494,16 @@
 	}
 	.info-note {
 		margin-top: 12px;
-		font-size: 13px;
-		line-height: 1.4;
+		font-size: 12px;
+		line-height: 1.5;
 		color: var(--text-muted);
 		border-top: 1px solid var(--border);
 		padding-top: 12px;
 	}
 	.backup-note {
 		color: var(--text-muted);
-		font-size: 13px;
-		line-height: 1.4;
+		font-size: 12px;
+		line-height: 1.5;
 	}
 	.muted {
 		color: var(--text-muted);
