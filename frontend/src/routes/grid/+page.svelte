@@ -126,6 +126,9 @@
 	 * Build expanding-radius query cells: precision 7 (~150m), 6 (~1.2km), 5 (~5km), 4 (~40km).
 	 * Each ring uses decoy cells for privacy.
 	 */
+	// All 32 base32 geohash characters — one per precision-1 cell, covers the entire planet
+	const ALL_P1 = '0123456789bcdefghjkmnpqrstuvwxyz'.split('');
+
 	function buildExpandingCells(lat: number, lon: number): string[] {
 		const cellSet = new Set<string>();
 		// Precision 7 — immediate neighborhood (~150m cells)
@@ -137,9 +140,8 @@
 		// Precision 5 — city-level (~5km cells)
 		const p5 = encode(lat, lon, 5);
 		for (const c of [p5, ...neighbors(p5)]) cellSet.add(c);
-		// Precision 4 — region (~40km cells)
-		const p4 = encode(lat, lon, 4);
-		for (const c of [p4, ...neighbors(p4)]) cellSet.add(c);
+		// All precision-1 cells — covers the entire planet
+		for (const c of ALL_P1) cellSet.add(c);
 		return Array.from(cellSet);
 	}
 
