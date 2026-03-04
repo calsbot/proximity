@@ -323,6 +323,28 @@
 		}
 	}
 
+	/** Clipboard write with fallback for mobile browsers */
+	function copyToClipboard(text: string): boolean {
+		// Try modern API first
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(text).catch(() => {});
+			return true;
+		}
+		// Fallback: temporary textarea + execCommand
+		const ta = document.createElement('textarea');
+		ta.value = text;
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		ta.style.opacity = '0';
+		document.body.appendChild(ta);
+		ta.focus();
+		ta.select();
+		let ok = false;
+		try { ok = document.execCommand('copy'); } catch {}
+		document.body.removeChild(ta);
+		return ok;
+	}
+
 	async function shareInvite() {
 		if (!myDid) return;
 		const key = randomHex(16);
@@ -342,7 +364,7 @@
 			} catch {}
 		}
 		// Fallback to clipboard
-		await navigator.clipboard.writeText(url);
+		copyToClipboard(url);
 		inviteLinkCopied = true;
 		setTimeout(() => { inviteLinkCopied = false; }, 2000);
 	}
@@ -353,7 +375,7 @@
 		const hash = await sha256Hex(key);
 		await setInviteLinkHash(groupId, myDid, hash);
 		const url = `${window.location.origin}/invite#groupId=${encodeURIComponent(groupId)}&key=${encodeURIComponent(key)}`;
-		await navigator.clipboard.writeText(url);
+		copyToClipboard(url);
 		inviteLinkCopied = true;
 		setTimeout(() => { inviteLinkCopied = false; }, 2000);
 	}
