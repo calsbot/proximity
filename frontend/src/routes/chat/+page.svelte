@@ -199,16 +199,16 @@
 	}
 	.page-title {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.plus-btn {
-		width: 44px;
-		height: 44px;
+		width: 48px;
+		height: 48px;
 		border-radius: var(--radius);
 		border: 1px solid var(--border);
 		background: transparent;
 		color: var(--text);
-		font-size: 18px;
+		font-size: 20px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -216,8 +216,10 @@
 		padding: 0;
 		line-height: 1;
 	}
-	.plus-btn:hover {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.plus-btn:hover {
+			background: var(--bg-hover);
+		}
 	}
 
 	/* Panel */
@@ -230,19 +232,21 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
-		padding: 12px 16px;
+		padding: 14px 16px;
 		background: transparent;
 		border: none;
 		border-radius: 0;
 		color: var(--text);
 		cursor: pointer;
-		font-size: 13px;
+		font-size: 14px;
 		text-align: left;
-		min-height: 44px;
+		min-height: 48px;
 		width: 100%;
 	}
-	.panel-item:hover {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.panel-item:hover {
+			background: var(--bg-hover);
+		}
 	}
 	.panel-icon {
 		font-size: 16px;
@@ -284,7 +288,7 @@
 	.dot.orange { background: var(--warning); }
 	.title {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.card-body {
 		padding: 0;
@@ -293,7 +297,7 @@
 		color: var(--text-muted);
 		text-align: center;
 		padding: 32px 16px;
-		font-size: 13px;
+		font-size: 14px;
 	}
 
 	/* Conversation rows */
@@ -301,9 +305,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		padding: 12px 16px;
+		padding: 14px 16px;
 		text-decoration: none;
-		min-height: 44px;
+		min-height: 48px;
 		justify-content: center;
 	}
 	@media (hover: hover) {
@@ -316,7 +320,7 @@
 	}
 	.name {
 		color: var(--text);
-		font-size: 13px;
+		font-size: 14px;
 		display: flex;
 		align-items: center;
 		gap: 6px;
@@ -327,7 +331,7 @@
 		color: var(--text-muted);
 		border: 1px solid var(--border);
 		padding: 1px 6px;
-		border-radius: 4px;
+		border-radius: var(--radius);
 	}
 	.left-tag {
 		color: var(--danger);
@@ -353,7 +357,7 @@
 		font-size: 13px;
 	}
 	.badge {
-		background: var(--text);
+		background: var(--white);
 		color: var(--bg);
 		font-size: 11px;
 		padding: 2px 7px;
@@ -366,14 +370,14 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 12px 16px;
-		min-height: 44px;
+		padding: 14px 16px;
+		min-height: 48px;
 	}
 	.invite-row:not(:last-child) {
 		border-bottom: 1px solid var(--border);
 	}
 	.invite-actions { display: flex; gap: 8px; }
-	button.small { padding: 6px 12px; font-size: 13px; min-height: 36px; }
+	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
 	button.muted { color: var(--text-muted); border-color: transparent; }
 	button.danger { color: var(--danger); border-color: var(--danger); }
 
@@ -392,7 +396,7 @@
 		padding: 0 4px;
 		cursor: pointer;
 		opacity: 0;
-		transition: opacity 0.15s;
+		transition: opacity 0.1s;
 		min-height: 28px;
 		min-width: 28px;
 		display: flex;
@@ -413,12 +417,12 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 12px 16px;
-		min-height: 44px;
+		padding: 14px 16px;
+		min-height: 48px;
 	}
 	.delete-text {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 		flex: 1;
 	}
 </style>

@@ -664,8 +664,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		height: calc(100vh - 130px);
-		height: calc(100dvh - 130px);
+		height: calc(100dvh - 24px);
 	}
 	.card {
 		border: 1px solid var(--border);
@@ -688,22 +687,24 @@
 		padding: 4px 8px;
 		font-size: 16px;
 		color: var(--text-muted);
-		min-width: 44px;
-		min-height: 44px;
+		min-width: 48px;
+		min-height: 48px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.back:hover { color: var(--text); background: transparent; }
+	@media (hover: hover) {
+		.back:hover { color: var(--text); background: transparent; }
+	}
 	.dot {
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
 	}
-	.dot.green { background: var(--accent); }
+	.dot.green { background: var(--white); }
 	.title {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.tab-bar {
 		margin-left: auto;
@@ -714,24 +715,26 @@
 		overflow: hidden;
 	}
 	.tab {
-		padding: 6px 12px;
+		padding: 8px 12px;
 		font-size: 13px;
 		border: none;
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
-		min-height: 32px;
+		min-height: 36px;
 	}
 	.tab:not(:last-child) {
 		border-right: 1px solid var(--border);
 	}
 	.tab.active {
-		background: var(--text);
+		background: var(--white);
 		color: var(--bg);
 	}
-	.tab:hover:not(.active) {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.tab:hover:not(.active) {
+			background: var(--bg-hover);
+		}
 	}
 
 	/* Message area */
@@ -753,34 +756,34 @@
 		align-items: flex-end;
 	}
 	.sender {
-		font-size: 11px;
+		font-size: 12px;
 		color: var(--text-muted);
 		margin-bottom: 2px;
 		margin-left: 4px;
 	}
 	.bubble {
 		max-width: 75%;
-		padding: 8px 12px;
-		border-radius: 12px;
+		padding: 10px 14px;
+		border-radius: var(--radius);
 		border: 1px solid var(--border);
 		display: flex;
 		align-items: baseline;
 		gap: 8px;
 	}
 	.mine .bubble {
-		background: rgba(68, 255, 68, 0.06);
-		border-color: rgba(68, 255, 68, 0.15);
+		background: var(--bg-surface);
+		border-color: var(--border);
 	}
 	.text {
 		color: var(--text);
 		line-height: 1.5;
 		word-break: break-word;
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.system-msg {
 		text-align: center;
-		color: var(--text-muted);
-		font-size: 11px;
+		color: var(--text-tertiary);
+		font-size: 12px;
 		padding: 8px 0;
 		line-height: 1.5;
 	}
@@ -788,7 +791,7 @@
 		color: var(--text-muted);
 		text-align: center;
 		padding: 24px 0;
-		font-size: 13px;
+		font-size: 14px;
 	}
 
 	/* Composer */
@@ -802,8 +805,8 @@
 	}
 	.composer input {
 		border: none;
-		padding: 8px 8px;
-		min-height: 36px;
+		padding: 8px;
+		min-height: 40px;
 	}
 	.composer input:focus {
 		border-color: transparent;
@@ -824,23 +827,23 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 8px 0;
+		padding: 10px 0;
 	}
 	.member-name {
 		color: var(--text);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.member-role {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		border: 1px solid var(--border);
 		padding: 2px 6px;
-		border-radius: 4px;
+		border-radius: var(--radius);
 	}
 	.member-row button {
 		margin-left: auto;
 	}
-	button.small { padding: 6px 12px; font-size: 13px; min-height: 36px; }
+	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
 	button.muted { color: var(--text-muted); border-color: transparent; }
 	.add-member {
 		display: flex;
@@ -866,9 +869,11 @@
 		border-color: var(--border);
 		color: var(--text-muted);
 	}
-	.invite-btn.secondary:hover {
-		color: var(--text);
-		border-color: #444;
+	@media (hover: hover) {
+		.invite-btn.secondary:hover {
+			color: var(--text);
+			border-color: #444;
+		}
 	}
 	.leave-btn {
 		margin-top: 8px;
@@ -883,16 +888,16 @@
 		gap: 8px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
-		padding: 12px 16px;
+		padding: 14px 16px;
 		flex-wrap: wrap;
 	}
 	.left-text {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.left-error {
 		color: var(--danger);
-		font-size: 13px;
+		font-size: 14px;
 		width: 100%;
 	}
 	.join-requests {
@@ -902,7 +907,7 @@
 	}
 	.section-label {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 		margin-bottom: 4px;
 	}
 	.req-actions {
@@ -916,24 +921,26 @@
 		border: none;
 		background: transparent;
 		color: var(--text-muted);
-		font-size: 18px;
+		font-size: 20px;
 		padding: 4px 8px;
 		cursor: pointer;
 		flex-shrink: 0;
-		min-width: 44px;
-		min-height: 44px;
+		min-width: 48px;
+		min-height: 48px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.attach-btn:hover { color: var(--text); }
+	@media (hover: hover) {
+		.attach-btn:hover { color: var(--text); }
+	}
 	.media-bubble {
 		cursor: pointer;
 		align-items: center;
 	}
 	.media-bubble.unseen {
-		background: rgba(68, 255, 68, 0.06);
-		border-color: rgba(68, 255, 68, 0.15);
+		background: var(--bg-surface);
+		border-color: var(--text-muted);
 	}
 	.media-bubble:disabled {
 		cursor: default;
@@ -941,11 +948,11 @@
 		border-color: var(--border);
 	}
 	.media-icon {
-		font-size: 11px;
-		color: var(--accent);
+		font-size: 12px;
+		color: var(--text);
 	}
 	.media-text {
-		font-size: 13px;
+		font-size: 14px;
 		color: var(--text);
 		font-weight: 500;
 	}
@@ -972,7 +979,7 @@
 		border: 1px solid var(--border);
 	}
 	.view-once-label {
-		font-size: 11px;
+		font-size: 12px;
 		color: var(--text-muted);
 	}
 	.preview-remove {
@@ -980,17 +987,19 @@
 		border: none;
 		background: transparent;
 		color: var(--text-muted);
-		font-size: 18px;
+		font-size: 20px;
 		padding: 4px 8px;
-		min-height: 44px;
-		min-width: 44px;
+		min-height: 48px;
+		min-width: 48px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.preview-remove:hover {
-		color: var(--text);
-		background: transparent;
+	@media (hover: hover) {
+		.preview-remove:hover {
+			color: var(--text);
+			background: transparent;
+		}
 	}
 	.composer.has-preview {
 		border-top-left-radius: 0;
@@ -1007,7 +1016,7 @@
 		color: var(--text-muted);
 		text-align: center;
 		padding: 48px 16px;
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.chat.map-mode .card {
 		flex: 1;

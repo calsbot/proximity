@@ -20,6 +20,15 @@
 		return '';
 	});
 
+	// Hide bottom nav on setup/invite pages and inside chat conversations
+	let showNav = $derived.by(() => {
+		const p = page.url.pathname;
+		if (p.startsWith('/setup')) return false;
+		if (p.startsWith('/invite')) return false;
+		if (p.match(/^\/chat\/[^/]+/)) return false;
+		return true;
+	});
+
 	onMount(async () => {
 		initIdentitySync();
 
@@ -91,23 +100,29 @@
 	}
 </script>
 
-<div class="app">
-	<header>
-		<nav class="nav-links">
-			<a href="/grid" class:active={activeNav === 'grid'}>nearby</a>
-			<a href="/chat" class:active={activeNav === 'chat'}>messages</a>
-			<a href="/profile/edit" class:active={activeNav === 'profile'}>profile</a>
-		</nav>
-	</header>
+<div class="app" class:has-nav={showNav}>
 	<main>
 		{#if !checked}
-			<div class="loading-card">
+			<div class="loading-screen">
 				<p class="status">loading...</p>
 			</div>
 		{:else}
 			{@render children()}
 		{/if}
 	</main>
+	{#if showNav}
+		<nav class="bottom-nav">
+			<a href="/grid" class="nav-item" class:active={activeNav === 'grid'}>
+				<span class="nav-label">nearby</span>
+			</a>
+			<a href="/chat" class="nav-item" class:active={activeNav === 'chat'}>
+				<span class="nav-label">messages</span>
+			</a>
+			<a href="/profile/edit" class="nav-item" class:active={activeNav === 'profile'}>
+				<span class="nav-label">profile</span>
+			</a>
+		</nav>
+	{/if}
 </div>
 
 <style>
@@ -119,63 +134,77 @@
 		max-width: 600px;
 		margin: 0 auto;
 		padding: 0 16px;
-		padding-top: var(--safe-top);
-		padding-bottom: var(--safe-bottom);
+		padding-top: max(12px, var(--safe-top));
 		padding-left: max(16px, var(--safe-left));
 		padding-right: max(16px, var(--safe-right));
 	}
+	.app.has-nav {
+		padding-bottom: calc(var(--nav-height) + var(--safe-bottom) + 8px);
+	}
 	main {
 		flex: 1;
-		padding: 16px 0 40px;
+		padding: 0 0 16px;
 	}
-	header {
-		position: sticky;
-		top: 0;
-		background: var(--bg);
-		z-index: 10;
-	}
-	.nav-links {
-		display: flex;
-		gap: 0;
-		align-items: center;
-		border-bottom: 1px solid var(--border);
-	}
-	.nav-links a {
-		position: relative;
-		color: var(--text-muted);
-		font-size: 13px;
-		min-height: 44px;
-		display: flex;
-		align-items: center;
-		padding: 0 16px;
-		text-decoration: none;
-		transition: color 0.15s;
-	}
-	.nav-links a:first-child {
-		padding-left: 0;
-	}
-	.nav-links a:hover {
-		color: var(--text);
-		text-decoration: none;
-	}
-	.nav-links a.active {
-		color: var(--text);
-	}
-	.nav-links a.active::after {
-		content: '';
-		position: absolute;
-		bottom: -1px;
+
+	/* Bottom navigation */
+	.bottom-nav {
+		position: fixed;
+		bottom: 0;
 		left: 0;
 		right: 0;
-		height: 1px;
-		background: var(--text);
+		height: calc(var(--nav-height) + var(--safe-bottom));
+		padding-bottom: var(--safe-bottom);
+		background: var(--bg);
+		border-top: 1px solid var(--border);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 100;
 	}
-	.loading-card {
-		max-width: 420px;
+	.nav-item {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		height: var(--nav-height);
+		padding: 0 24px;
+		text-decoration: none;
+		color: var(--text-muted);
+		transition: color 0.1s;
+		position: relative;
+	}
+	@media (hover: hover) {
+		.nav-item:hover {
+			color: var(--text);
+			text-decoration: none;
+		}
+	}
+	.nav-item.active {
+		color: var(--white);
+	}
+	.nav-item.active::before {
+		content: '';
+		position: absolute;
+		top: 0;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 24px;
+		height: 2px;
+		background: var(--white);
+	}
+	.nav-label {
+		font-size: 14px;
+		font-weight: 400;
+		letter-spacing: 0.01em;
+	}
+
+	.loading-screen {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 60vh;
 	}
 	.status {
 		color: var(--text-muted);
-		text-align: center;
-		padding: 40px 0;
+		font-size: 14px;
 	}
 </style>

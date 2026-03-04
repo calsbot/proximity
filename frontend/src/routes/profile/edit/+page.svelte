@@ -366,16 +366,18 @@
 		text-align: left;
 		font-family: inherit;
 		font-size: inherit;
-		min-height: 44px;
+		min-height: 48px;
 		border-radius: 0;
 	}
-	.toggle-header:hover {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.toggle-header:hover {
+			background: var(--bg-hover);
+		}
 	}
 	.chevron {
 		margin-left: auto;
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.dot {
 		width: 6px;
@@ -383,10 +385,10 @@
 		border-radius: 50%;
 		background: var(--text-muted);
 	}
-	.dot.green { background: var(--accent); }
+	.dot.green { background: var(--white); }
 	.title {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.card-body {
 		padding: 16px;
@@ -403,42 +405,44 @@
 		border-bottom: 1px solid var(--border);
 	}
 	.avatar {
-		width: 72px;
-		height: 72px;
-		border-radius: 50%;
+		width: 80px;
+		height: 80px;
+		border-radius: var(--radius);
 		object-fit: cover;
 		border: 1px solid var(--border);
 	}
 	.avatar-placeholder {
-		width: 72px;
-		height: 72px;
-		border-radius: 50%;
+		width: 80px;
+		height: 80px;
+		border-radius: var(--radius);
 		border: 1px solid var(--border);
 		display: flex;
 		align-items: center;
 		justify-content: center;
 		color: var(--text-muted);
-		font-size: 22px;
+		font-size: 24px;
 	}
 	.upload-btn {
 		cursor: pointer;
 		border: 1px solid var(--border);
-		padding: 10px 16px;
+		padding: 12px 16px;
 		border-radius: var(--radius);
-		font-size: 13px;
+		font-size: 14px;
 		color: var(--text);
-		transition: background 0.15s;
-		min-height: 44px;
+		transition: background 0.1s;
+		min-height: 48px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.upload-btn:hover {
-		background: var(--bg-hover);
+	@media (hover: hover) {
+		.upload-btn:hover {
+			background: var(--bg-hover);
+		}
 	}
 	.photo-note {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		text-align: center;
 		line-height: 1.5;
 	}
@@ -455,7 +459,7 @@
 		gap: 6px;
 	}
 	label span {
-		font-size: 13px;
+		font-size: 14px;
 		color: var(--text-muted);
 	}
 	textarea {
@@ -465,11 +469,11 @@
 		min-height: 18px;
 	}
 	.status-text {
-		font-size: 13px;
+		font-size: 14px;
 		color: var(--text-muted);
 	}
 	.status-text.success {
-		color: var(--accent);
+		color: var(--text);
 	}
 	.status-text.error {
 		color: var(--danger);
@@ -480,21 +484,21 @@
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		padding: 8px 0;
+		padding: 10px 0;
 	}
 	.info-label {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.info-value {
-		font-size: 13px;
+		font-size: 14px;
 		max-width: 60%;
 		text-align: right;
 		word-break: break-all;
 	}
 	.info-note {
 		margin-top: 12px;
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 		color: var(--text-muted);
 		border-top: 1px solid var(--border);
@@ -502,15 +506,15 @@
 	}
 	.backup-note {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 	}
 	.muted {
 		color: var(--text-muted);
 	}
 	button.small {
-		padding: 6px 12px;
-		font-size: 13px;
-		min-height: 36px;
+		padding: 8px 12px;
+		font-size: 14px;
+		min-height: 40px;
 	}
 </style>

@@ -171,7 +171,7 @@
 		border-radius: 50%;
 		background: var(--text-muted);
 	}
-	.dot.green { background: var(--accent); }
+	.dot.green { background: var(--white); }
 	.dot.orange { background: var(--warning); }
 	.title {
 		color: var(--text-muted);

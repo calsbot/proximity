@@ -138,7 +138,7 @@
 	.viewer-overlay {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.95);
+		background: rgba(0, 0, 0, 0.97);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -165,7 +165,7 @@
 		max-width: 100%;
 		max-height: calc(100vh - 120px);
 		object-fit: contain;
-		border-radius: 4px;
+		border-radius: var(--radius);
 		/* Prevent drag-to-save */
 		-webkit-user-drag: none;
 		user-select: none;
@@ -176,23 +176,25 @@
 	}
 	.viewer-status {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.viewer-error {
-		color: var(--danger, #ff4444);
-		font-size: 13px;
+		color: var(--danger);
+		font-size: 14px;
 	}
 	.viewer-close {
 		border: 1px solid rgba(255, 255, 255, 0.2);
 		background: transparent;
 		color: rgba(255, 255, 255, 0.7);
-		padding: 8px 24px;
-		font-size: 13px;
-		min-height: 44px;
+		padding: 12px 24px;
+		font-size: 14px;
+		min-height: 48px;
 		pointer-events: auto;
 	}
-	.viewer-close:hover {
-		color: #fff;
-		border-color: rgba(255, 255, 255, 0.4);
+	@media (hover: hover) {
+		.viewer-close:hover {
+			color: #fff;
+			border-color: rgba(255, 255, 255, 0.4);
+		}
 	}
 </style>

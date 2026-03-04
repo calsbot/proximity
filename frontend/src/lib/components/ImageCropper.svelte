@@ -197,7 +197,7 @@
 	.cropper-overlay {
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.85);
+		background: rgba(0, 0, 0, 0.95);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -214,14 +214,14 @@
 	}
 	.cropper-title {
 		color: var(--text);
-		font-size: 14px;
+		font-size: 16px;
 	}
 	.cropper-hint {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 	}
 	.canvas-container {
-		border: 2px solid var(--border);
+		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		overflow: hidden;
 		line-height: 0;
@@ -249,11 +249,13 @@
 	}
 	.confirm-btn {
 		flex: 2;
-		background: var(--text);
+		background: var(--white);
 		color: var(--bg);
 		border: none;
 	}
-	.confirm-btn:hover {
-		opacity: 0.9;
+	@media (hover: hover) {
+		.confirm-btn:hover {
+			opacity: 0.9;
+		}
 	}
 </style>

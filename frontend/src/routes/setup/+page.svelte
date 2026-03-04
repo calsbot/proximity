@@ -155,11 +155,11 @@
 		border-radius: 50%;
 	}
 	.dot.green {
-		background: var(--accent);
+		background: var(--white);
 	}
 	.title {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.card-body {
 		padding: 16px;
@@ -168,13 +168,13 @@
 		gap: 16px;
 	}
 	.hero {
-		font-size: 14px;
+		font-size: 16px;
 		line-height: 1.5;
 		color: var(--text);
 	}
 	.note {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 	}
 	form {
@@ -188,26 +188,26 @@
 		gap: 6px;
 	}
 	label span {
-		font-size: 13px;
+		font-size: 14px;
 		color: var(--text-muted);
 	}
 	.error {
 		color: var(--danger);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.warning-box {
 		padding: 12px 16px;
-		border: 1px solid rgba(255, 170, 68, 0.2);
+		border: 1px solid var(--border);
 		border-radius: var(--radius);
-		background: rgba(255, 170, 68, 0.04);
+		background: var(--bg-surface);
 	}
 	.warning-title {
-		font-size: 13px;
-		color: var(--warning);
+		font-size: 14px;
+		color: var(--text);
 		margin-bottom: 4px;
 	}
 	.warning-text {
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 		color: var(--text-muted);
 	}
@@ -215,19 +215,21 @@
 		background: none;
 		border: none;
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 		padding: 0;
 		cursor: pointer;
 		text-align: left;
 		width: 100%;
 		min-height: auto;
 	}
-	.expand-toggle:hover {
-		color: var(--text);
-		background: transparent;
+	@media (hover: hover) {
+		.expand-toggle:hover {
+			color: var(--text);
+			background: transparent;
+		}
 	}
 	.data-info p {
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 		color: var(--text-muted);
 		margin-bottom: 8px;
@@ -238,8 +240,10 @@
 	.link-btn {
 		color: var(--text-muted);
 	}
-	.link-btn:hover {
-		color: var(--text);
+	@media (hover: hover) {
+		.link-btn:hover {
+			color: var(--text);
+		}
 	}
 	.divider {
 		border-top: 1px solid var(--border);
@@ -249,7 +253,7 @@
 	}
 	.restore-note {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1.5;
 		margin-top: -8px;
 	}
