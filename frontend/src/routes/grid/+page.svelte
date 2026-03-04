@@ -321,14 +321,14 @@
 		<div class="location-prompt">
 			<p class="prompt-title">share your location to see who's&nbsp;nearby.</p>
 			<button onclick={enableLocation}>enable location</button>
-			<p class="prompt-detail">your area is mixed with fake areas. no one can pinpoint you, including&nbsp;us.</p>
+			<p class="prompt-detail">Your location is approximate. We add nearby areas to prevent exact positioning.</p>
 		</div>
 	{:else if loading}
 		<p class="status">scanning...</p>
 	{:else if locationError}
 		<div class="empty">
 			<p>couldn't access your location</p>
-			<p class="prompt-detail">make sure location is enabled in your device settings. on iOS, go to Settings &gt; Privacy &gt; Location Services &gt; Chrome</p>
+			<p class="prompt-detail">make sure location is enabled in your device and browser settings.</p>
 			<button onclick={enableLocation}>try again</button>
 		</div>
 	{:else if isMapActive}
@@ -407,7 +407,7 @@
 	.grid-page.map-mode {
 		display: flex;
 		flex-direction: column;
-		height: calc(100dvh - 45px - 16px - var(--safe-top, 0px));
+		height: calc(100dvh - var(--nav-height) - var(--safe-bottom) - 24px);
 		overflow: hidden;
 	}
 	.map-wrapper {
@@ -431,8 +431,8 @@
 		overflow: hidden;
 	}
 	.pill {
-		padding: 8px 14px;
-		font-size: 13px;
+		padding: 10px 16px;
+		font-size: 14px;
 		border: none;
 		border-radius: 0;
 		background: transparent;
@@ -443,18 +443,20 @@
 	.pill:not(:last-child) {
 		border-right: 1px solid var(--border);
 	}
-	.pill:hover {
-		color: var(--text);
-		background: transparent;
+	@media (hover: hover) {
+		.pill:hover {
+			color: var(--text);
+			background: transparent;
+		}
 	}
 	.pill.active {
-		background: var(--text);
+		background: var(--white);
 		color: var(--bg);
 	}
 	.groups-btn {
 		margin-left: auto;
-		padding: 8px 14px;
-		font-size: 13px;
+		padding: 10px 16px;
+		font-size: 14px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		background: transparent;
@@ -463,14 +465,16 @@
 		white-space: nowrap;
 		min-height: auto;
 	}
-	.groups-btn:hover {
-		color: var(--text);
-		border-color: #444;
+	@media (hover: hover) {
+		.groups-btn:hover {
+			color: var(--text);
+			border-color: #444;
+		}
 	}
 	.groups-btn.active {
-		background: var(--text);
+		background: var(--white);
 		color: var(--bg);
-		border-color: var(--text);
+		border-color: var(--white);
 	}
 	.groups-dropdown {
 		display: flex;
@@ -482,14 +486,14 @@
 	}
 	.group-option {
 		padding: 12px 16px;
-		font-size: 13px;
+		font-size: 14px;
 		border: none;
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
 		text-align: left;
-		min-height: 44px;
+		min-height: 48px;
 		display: flex;
 		align-items: center;
 		text-decoration: none;
@@ -497,9 +501,11 @@
 	.group-option:not(:last-child) {
 		border-bottom: 1px solid var(--border);
 	}
-	.group-option:hover {
-		background: var(--bg-hover);
-		color: var(--text);
+	@media (hover: hover) {
+		.group-option:hover {
+			background: var(--bg-hover);
+			color: var(--text);
+		}
 	}
 	.group-option.create {
 		color: var(--text-muted);
@@ -510,7 +516,7 @@
 		color: var(--text-muted);
 		text-align: center;
 		padding: 48px 0;
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.empty {
 		text-align: center;
@@ -519,7 +525,7 @@
 	.empty p {
 		color: var(--text-muted);
 		margin-bottom: 16px;
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.location-prompt {
 		max-width: 340px;
@@ -532,21 +538,20 @@
 	}
 	.prompt-title {
 		color: var(--text);
-		font-size: 14px;
+		font-size: 16px;
 		text-align: center;
 		line-height: 1.5;
 	}
 	.prompt-detail {
 		color: var(--text-muted);
-		font-size: 11px;
+		font-size: 12px;
 		text-align: center;
 		line-height: 1.5;
 	}
 	.privacy-hint {
-		color: var(--text-muted);
-		font-size: 13px;
+		color: var(--text-tertiary);
+		font-size: 12px;
 		text-align: center;
-		opacity: 0.5;
 		margin-top: 16px;
 	}
 
@@ -554,28 +559,32 @@
 	.photo-grid {
 		display: grid;
 		grid-template-columns: repeat(3, 1fr);
-		gap: 4px;
+		gap: 2px;
 	}
 	.tile {
 		position: relative;
 		aspect-ratio: 3 / 4;
 		overflow: hidden;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+		border: none;
+		border-radius: 0;
 		padding: 0;
 		cursor: pointer;
-		background: var(--bg);
-		transition: opacity 0.15s;
+		background: var(--bg-surface);
+		transition: opacity 0.1s;
 		min-height: auto;
 	}
-	.tile:hover {
-		opacity: 0.85;
+	@media (hover: hover) {
+		.tile:hover {
+			opacity: 0.85;
+		}
 	}
 	.tile.muted {
-		opacity: 0.65;
-	}
-	.tile.muted:hover {
 		opacity: 0.55;
+	}
+	@media (hover: hover) {
+		.tile.muted:hover {
+			opacity: 0.45;
+		}
 	}
 	.tile-img {
 		width: 100%;
@@ -586,15 +595,14 @@
 	.tile-placeholder {
 		width: 100%;
 		height: 100%;
-		background: #111;
+		background: var(--bg-surface);
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
 	.tile-initial {
 		font-size: 28px;
-		color: var(--text-muted);
-		opacity: 0.3;
+		color: var(--text-tertiary);
 		font-weight: 300;
 	}
 	.tile-presence {
@@ -606,15 +614,15 @@
 		border-radius: 50%;
 		border: 1.5px solid rgba(0, 0, 0, 0.5);
 	}
-	.tile-presence.online { background: var(--accent); }
-	.tile-presence.idle { background: #ffcc00; }
-	.tile-presence.away { background: rgba(255, 255, 255, 0.3); }
+	.tile-presence.online { background: var(--white); }
+	.tile-presence.idle { background: var(--text-muted); }
+	.tile-presence.away { background: rgba(255, 255, 255, 0.2); }
 	.tile-badge {
 		position: absolute;
 		top: 4px;
 		right: 4px;
-		background: var(--accent);
-		color: #000;
+		background: var(--white);
+		color: var(--bg);
 		font-size: 10px;
 		font-weight: 700;
 		min-width: 18px;
@@ -634,11 +642,11 @@
 		align-items: flex-end;
 	}
 	.group-badge {
-		background: rgba(0, 0, 0, 0.65);
-		color: var(--accent);
+		background: rgba(0, 0, 0, 0.7);
+		color: var(--white);
 		font-size: 10px;
-		padding: 2px 5px;
-		border-radius: 3px;
+		padding: 2px 6px;
+		border-radius: 1px;
 		white-space: nowrap;
 		max-width: 80px;
 		overflow: hidden;
@@ -652,25 +660,24 @@
 		right: 0;
 		padding: 28px 8px 8px;
 		background: linear-gradient(transparent, rgba(0,0,0,0.85));
-		border-radius: 0 0 var(--radius) var(--radius);
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
 	}
 	.tile-name {
 		color: #fff;
-		font-size: 12px;
+		font-size: 13px;
 		font-weight: 500;
 		line-height: 1.3;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 	}
 	.tile-dist {
 		color: rgba(255, 255, 255, 0.6);
-		font-size: 11px;
-		text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+		font-size: 12px;
+		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 	}
 	@media (min-width: 500px) {
 		.photo-grid {

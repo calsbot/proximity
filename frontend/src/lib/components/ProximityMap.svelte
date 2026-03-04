@@ -69,9 +69,9 @@
 	}
 
 	function presenceColor(p: Presence): string {
-		if (p === 'active') return '#44ff44';
-		if (p === 'idle') return '#ffcc00';
-		return '#666';
+		if (p === 'active') return '#ffffff';
+		if (p === 'idle') return '#888888';
+		return '#444';
 	}
 
 	function presenceOpacity(p: Presence): number {
@@ -453,7 +453,7 @@
 			fillColor: 'transparent',
 			fillOpacity: 0,
 			stroke: true,
-			color: '#44ff44',
+			color: '#ffffff',
 			weight: 2,
 			opacity: 1,
 		}).bindTooltip('you', {
@@ -465,7 +465,7 @@
 
 		L.circleMarker([userLat, userLon], {
 			radius: 2,
-			fillColor: '#44ff44',
+			fillColor: '#ffffff',
 			fillOpacity: 1,
 			stroke: false,
 		}).addTo(map);
@@ -536,7 +536,7 @@
 	.map-el {
 		width: 100%;
 		height: 100%;
-		background: #0c0c0c;
+		background: var(--bg);
 	}
 
 	.recenter-btn {
@@ -544,67 +544,67 @@
 		top: 10px;
 		left: 10px;
 		z-index: 1000;
-		width: 32px;
-		height: 32px;
-		min-height: 32px;
+		width: 36px;
+		height: 36px;
+		min-height: 36px;
 		padding: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(12, 12, 12, 0.85);
-		backdrop-filter: blur(8px);
-		-webkit-backdrop-filter: blur(8px);
-		border: 1px solid rgba(255, 255, 255, 0.12);
-		border-radius: 6px;
-		color: rgba(255, 255, 255, 0.6);
+		background: rgba(10, 10, 10, 0.9);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-muted);
 		cursor: pointer;
 	}
-	.recenter-btn:hover {
-		color: #fff;
-		border-color: rgba(255, 255, 255, 0.25);
+	@media (hover: hover) {
+		.recenter-btn:hover {
+			color: var(--white);
+			border-color: #444;
+		}
 	}
 
 	/* ========== Leaflet overrides for dark theme ========== */
 
 	:global(.leaflet-container) {
-		background: #0c0c0c !important;
-		font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace;
+		background: #0a0a0a !important;
+		font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
 	}
 
 	:global(.leaflet-control-zoom) {
-		border: 1px solid rgba(255, 255, 255, 0.12) !important;
-		border-radius: 6px !important;
+		border: 1px solid #2a2a2a !important;
+		border-radius: 2px !important;
 		overflow: hidden;
 	}
 	:global(.leaflet-control-zoom a) {
-		background: rgba(12, 12, 12, 0.85) !important;
+		background: rgba(10, 10, 10, 0.9) !important;
 		color: rgba(255, 255, 255, 0.6) !important;
-		border-color: rgba(255, 255, 255, 0.12) !important;
+		border-color: #2a2a2a !important;
 		width: 30px !important;
 		height: 30px !important;
 		line-height: 30px !important;
 		font-size: 14px !important;
 	}
 	:global(.leaflet-control-zoom a:hover) {
-		background: rgba(30, 30, 30, 0.9) !important;
+		background: #1e1e1e !important;
 		color: #fff !important;
 	}
 
 	:global(.leaflet-control-attribution) {
-		background: rgba(12, 12, 12, 0.7) !important;
+		background: rgba(10, 10, 10, 0.7) !important;
 		color: rgba(255, 255, 255, 0.3) !important;
 		font-size: 8px !important;
-		font-family: 'SF Mono', 'Fira Code', monospace !important;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
 	}
 	:global(.leaflet-control-attribution a) {
 		color: rgba(255, 255, 255, 0.4) !important;
 	}
 
 	:global(.leaflet-control-scale-line) {
-		background: rgba(12, 12, 12, 0.7) !important;
+		background: rgba(10, 10, 10, 0.7) !important;
 		border-color: rgba(255, 255, 255, 0.2) !important;
 		color: rgba(255, 255, 255, 0.4) !important;
-		font-family: 'SF Mono', 'Fira Code', monospace !important;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
 		font-size: 9px !important;
 		padding: 2px 6px !important;
 		line-height: 1.4 !important;
@@ -630,8 +630,8 @@
 		border: none !important;
 		box-shadow: none !important;
 		color: #888 !important;
-		font-family: 'SF Mono', 'Fira Code', monospace !important;
-		font-size: 9px !important;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
+		font-size: 10px !important;
 		padding: 0 !important;
 		white-space: nowrap !important;
 	}
@@ -639,8 +639,8 @@
 		display: none !important;
 	}
 	:global(.map-label-you) {
-		color: #44ff44 !important;
-		font-size: 8px !important;
+		color: #ffffff !important;
+		font-size: 9px !important;
 		opacity: 0.8;
 	}
 
@@ -667,18 +667,16 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: rgba(12, 12, 12, 0.92);
+		background: rgba(10, 10, 10, 0.92);
 		border-radius: 50%;
 		border: 1px solid rgba(255, 255, 255, 0.15);
-		backdrop-filter: blur(6px);
-		-webkit-backdrop-filter: blur(6px);
 	}
 
 	:global(.cluster-ring) {
 		position: absolute;
 		inset: 0;
 		border-radius: 50%;
-		border: 1px solid rgba(68, 255, 68, 0.3);
+		border: 1px solid rgba(255, 255, 255, 0.2);
 		animation: radar-ping 3s ease-out infinite;
 		pointer-events: none;
 	}
@@ -692,11 +690,11 @@
 	:global(.cluster-count) {
 		position: relative;
 		z-index: 1;
-		font-family: 'SF Mono', 'Fira Code', monospace;
-		font-size: 11px;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+		font-size: 12px;
 		font-weight: 500;
 		color: rgba(255, 255, 255, 0.8);
-		letter-spacing: -0.5px;
+		letter-spacing: -0.3px;
 	}
 
 	/* Override leaflet.markercluster default styles */
@@ -717,22 +715,20 @@
 	/* ========== Popups ========== */
 
 	:global(.map-popup-container .leaflet-popup-content-wrapper) {
-		background: rgba(12, 12, 12, 0.95) !important;
-		border: 1px solid rgba(255, 255, 255, 0.1) !important;
-		border-radius: 8px !important;
-		color: #e0e0e0 !important;
-		box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6) !important;
-		backdrop-filter: blur(12px);
-		-webkit-backdrop-filter: blur(12px);
+		background: rgba(10, 10, 10, 0.96) !important;
+		border: 1px solid #2a2a2a !important;
+		border-radius: 2px !important;
+		color: #e8e8e8 !important;
+		box-shadow: none !important;
 	}
 	:global(.map-popup-container .leaflet-popup-content) {
 		margin: 0 !important;
-		font-family: 'SF Mono', 'Fira Code', monospace !important;
-		font-size: 12px !important;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
+		font-size: 13px !important;
 	}
 	:global(.map-popup-container .leaflet-popup-tip) {
-		background: rgba(12, 12, 12, 0.95) !important;
-		border: 1px solid rgba(255, 255, 255, 0.1) !important;
+		background: rgba(10, 10, 10, 0.96) !important;
+		border: 1px solid #2a2a2a !important;
 		box-shadow: none !important;
 	}
 
@@ -748,12 +744,12 @@
 	:global(.popup-avatar) {
 		width: 44px;
 		height: 44px;
-		border-radius: 6px;
+		border-radius: 2px;
 		object-fit: cover;
 		flex-shrink: 0;
 	}
 	:global(.popup-avatar-placeholder) {
-		background: #1a1a1a;
+		background: #141414;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -768,9 +764,9 @@
 		min-width: 0;
 	}
 	:global(.popup-name) {
-		font-size: 13px;
-		font-weight: 600;
-		color: #e0e0e0;
+		font-size: 14px;
+		font-weight: 500;
+		color: #e8e8e8;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -797,26 +793,26 @@
 		margin-bottom: 8px;
 	}
 	:global(.popup-group-badge) {
-		font-size: 9px;
-		color: #44ff44;
-		border: 1px solid rgba(68, 255, 68, 0.2);
+		font-size: 10px;
+		color: #e8e8e8;
+		border: 1px solid #2a2a2a;
 		padding: 1px 6px;
-		border-radius: 3px;
+		border-radius: 2px;
 	}
 	:global(.popup-msg-btn) {
 		width: 100%;
-		padding: 8px;
-		font-size: 12px;
-		font-family: 'SF Mono', 'Fira Code', monospace;
+		padding: 10px;
+		font-size: 13px;
+		font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 		background: transparent;
-		border: 1px solid rgba(255, 255, 255, 0.15);
-		border-radius: 6px;
-		color: #e0e0e0;
+		border: 1px solid #2a2a2a;
+		border-radius: 2px;
+		color: #e8e8e8;
 		cursor: pointer;
-		min-height: 36px;
-		transition: background 0.15s;
+		min-height: 40px;
+		transition: background 0.1s;
 	}
 	:global(.popup-msg-btn:hover) {
-		background: rgba(255, 255, 255, 0.06);
+		background: #1e1e1e;
 	}
 </style>

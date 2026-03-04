@@ -172,7 +172,7 @@
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: var(--accent);
+		background: var(--white);
 		animation: pulse 1.5s ease-in-out infinite;
 	}
 	@keyframes pulse {
@@ -190,7 +190,7 @@
 	}
 	.expired-text {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 	}
 	.invite-card {
 		max-width: 340px;
@@ -201,14 +201,14 @@
 		align-items: center;
 	}
 	.eyebrow {
-		color: var(--accent);
-		font-size: 13px;
+		color: var(--text-muted);
+		font-size: 12px;
 		letter-spacing: 0.1em;
 		text-transform: uppercase;
 		margin-bottom: 16px;
 	}
 	.group-name {
-		color: var(--text);
+		color: var(--white);
 		font-size: 24px;
 		font-weight: 300;
 		letter-spacing: -0.02em;
@@ -223,35 +223,36 @@
 	}
 	.pitch {
 		color: var(--text);
-		font-size: 14px;
+		font-size: 16px;
 		font-weight: 300;
 		margin-bottom: 4px;
 	}
 	.meta {
 		color: var(--text-muted);
-		font-size: 13px;
+		font-size: 14px;
 		margin-bottom: 28px;
 	}
 	.error {
 		color: var(--danger);
-		font-size: 13px;
+		font-size: 14px;
 		margin-bottom: 8px;
 	}
 	.join-btn {
 		width: 100%;
 		max-width: 240px;
-		padding: 12px 24px;
-		font-size: 13px;
-		border: 1px solid rgba(68, 255, 68, 0.25);
-		background: rgba(68, 255, 68, 0.06);
-		color: var(--accent);
+		padding: 14px 24px;
+		font-size: 14px;
+		border: 1px solid var(--border);
+		background: var(--white);
+		color: var(--bg);
 		border-radius: var(--radius);
 		cursor: pointer;
-		transition: all 0.15s;
+		transition: opacity 0.1s;
 	}
-	.join-btn:hover:not(:disabled) {
-		background: rgba(68, 255, 68, 0.12);
-		border-color: rgba(68, 255, 68, 0.4);
+	@media (hover: hover) {
+		.join-btn:hover:not(:disabled) {
+			opacity: 0.85;
+		}
 	}
 	.signup {
 		width: 100%;
@@ -264,13 +265,12 @@
 		text-align: center;
 	}
 	.hint {
-		font-size: 11px;
+		font-size: 12px;
 		color: var(--text-muted);
 	}
 	.footer {
-		color: var(--text-muted);
-		font-size: 11px;
-		opacity: 0.4;
+		color: var(--text-tertiary);
+		font-size: 12px;
 		margin-top: 48px;
 	}
 </style>
