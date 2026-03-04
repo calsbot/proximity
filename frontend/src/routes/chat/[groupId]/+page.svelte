@@ -487,9 +487,11 @@
 <div class="chat" class:map-mode={activeTab === 'map'}>
 	<div class="card">
 		<div class="card-header">
-			<button class="back" onclick={() => goto('/chat')}>&larr;</button>
-			<span class="dot green"></span>
-			<span class="title">{convo?.peerName ?? 'conversation'}</span>
+			<div class="header-top">
+				<button class="back" onclick={() => goto('/chat')}>&larr;</button>
+				<span class="dot green"></span>
+				<span class="title">{convo?.peerName ?? 'conversation'}</span>
+			</div>
 			{#if isGroupChat && !hasLeft}
 				<div class="tab-bar">
 					<button class="tab" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>chat</button>
@@ -676,11 +678,17 @@
 	}
 	.card-header {
 		display: flex;
+		flex-direction: column;
+		gap: 0;
+		padding: 0;
+		border-bottom: 1px solid var(--border);
+		flex-shrink: 0;
+	}
+	.header-top {
+		display: flex;
 		align-items: center;
 		gap: 8px;
 		padding: 8px 16px 8px 8px;
-		border-bottom: 1px solid var(--border);
-		flex-shrink: 0;
 	}
 	.back {
 		border: none;
@@ -707,22 +715,21 @@
 		font-size: 14px;
 	}
 	.tab-bar {
-		margin-left: auto;
 		display: flex;
-		gap: 0;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
+		border-top: 1px solid var(--border);
 	}
 	.tab {
-		padding: 8px 12px;
-		font-size: 13px;
+		flex: 1;
+		padding: 10px 16px;
+		font-size: 12px;
+		letter-spacing: 0.02em;
 		border: none;
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
-		min-height: 36px;
+		min-height: 40px;
+		text-align: center;
 	}
 	.tab:not(:last-child) {
 		border-right: 1px solid var(--border);

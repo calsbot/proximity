@@ -69,14 +69,14 @@
 	}
 
 	function presenceColor(p: Presence): string {
-		if (p === 'active') return '#ffffff';
-		if (p === 'idle') return '#888888';
-		return '#444';
+		if (p === 'active') return '#44ff44';
+		if (p === 'idle') return '#ffcc00';
+		return '#555';
 	}
 
 	function presenceOpacity(p: Presence): number {
 		if (p === 'active') return 1.0;
-		if (p === 'idle') return 0.7;
+		if (p === 'idle') return 0.8;
 		return 0.4;
 	}
 
@@ -423,8 +423,8 @@
 		clusterGroup = L.markerClusterGroup({
 			zoomToBoundsOnClick: true,
 			showCoverageOnHover: false,
-			disableClusteringAtZoom: 14,
-			maxClusterRadius: 50,
+			disableClusteringAtZoom: 16,
+			maxClusterRadius: 60,
 			spiderfyOnMaxZoom: true,
 			iconCreateFunction: (cluster: L.MarkerCluster) => {
 				const count = cluster.getChildCount();
@@ -453,7 +453,7 @@
 			fillColor: 'transparent',
 			fillOpacity: 0,
 			stroke: true,
-			color: '#ffffff',
+			color: '#44ff44',
 			weight: 2,
 			opacity: 1,
 		}).bindTooltip('you', {
@@ -465,7 +465,7 @@
 
 		L.circleMarker([userLat, userLon], {
 			radius: 2,
-			fillColor: '#ffffff',
+			fillColor: '#44ff44',
 			fillOpacity: 1,
 			stroke: false,
 		}).addTo(map);
@@ -639,7 +639,7 @@
 		display: none !important;
 	}
 	:global(.map-label-you) {
-		color: #ffffff !important;
+		color: #44ff44 !important;
 		font-size: 9px !important;
 		opacity: 0.8;
 	}
@@ -669,14 +669,14 @@
 		justify-content: center;
 		background: rgba(10, 10, 10, 0.92);
 		border-radius: 50%;
-		border: 1px solid rgba(255, 255, 255, 0.15);
+		border: 1px solid rgba(68, 255, 68, 0.3);
 	}
 
 	:global(.cluster-ring) {
 		position: absolute;
 		inset: 0;
 		border-radius: 50%;
-		border: 1px solid rgba(255, 255, 255, 0.2);
+		border: 1px solid rgba(68, 255, 68, 0.3);
 		animation: radar-ping 3s ease-out infinite;
 		pointer-events: none;
 	}
@@ -693,7 +693,7 @@
 		font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 		font-size: 12px;
 		font-weight: 500;
-		color: rgba(255, 255, 255, 0.8);
+		color: rgba(68, 255, 68, 0.8);
 		letter-spacing: -0.3px;
 	}
 

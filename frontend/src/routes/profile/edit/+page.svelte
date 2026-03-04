@@ -217,7 +217,7 @@
 					<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
 					{uploading ? 'uploading...' : 'upload photo'}
 				</label>
-				<p class="photo-note">encrypted before upload.<br/>the server never sees it.</p>
+				<p class="photo-note">Your photo is encrypted locally before upload.</p>
 			</div>
 
 			<div class="fields">

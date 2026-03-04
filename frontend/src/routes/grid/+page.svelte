@@ -614,9 +614,9 @@
 		border-radius: 50%;
 		border: 1.5px solid rgba(0, 0, 0, 0.5);
 	}
-	.tile-presence.online { background: var(--white); }
-	.tile-presence.idle { background: var(--text-muted); }
-	.tile-presence.away { background: rgba(255, 255, 255, 0.2); }
+	.tile-presence.online { background: var(--online); }
+	.tile-presence.idle { background: var(--idle); }
+	.tile-presence.away { background: var(--offline); }
 	.tile-badge {
 		position: absolute;
 		top: 4px;
