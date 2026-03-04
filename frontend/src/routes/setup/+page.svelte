@@ -80,8 +80,10 @@
 	}
 </script>
 
-<div class="setup">
-	<p class="page-title">get started</p>
+<div class="page">
+	<div class="page-header">
+		<span class="page-title">get started</span>
+	</div>
 
 	<p class="hero">no account, email, or phone&nbsp;number.</p>
 	<p class="note">pick a display name. your identity is stored only on this device and can't be&nbsp;recovered.</p>
@@ -124,25 +126,29 @@
 </div>
 
 <style>
-	.setup {
-		max-width: 420px;
+	.page {
 		display: flex;
 		flex-direction: column;
-		gap: 16px;
+		gap: 12px;
+	}
+	.page-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
 	}
 	.page-title {
 		color: var(--text-muted);
 		font-size: 14px;
 	}
 	.hero {
-		font-size: 16px;
-		line-height: 1.5;
+		font-size: 14px;
+		line-height: 1.4;
 		color: var(--text);
 	}
 	.note {
 		color: var(--text-muted);
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 13px;
+		line-height: 1.4;
 	}
 	form {
 		display: flex;
@@ -173,8 +179,8 @@
 		font-size: 14px;
 	}
 	.warning {
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 13px;
+		line-height: 1.4;
 		color: var(--text-muted);
 	}
 	.warning-label {
@@ -198,8 +204,8 @@
 		}
 	}
 	.data-info p {
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 13px;
+		line-height: 1.4;
 		color: var(--text-muted);
 		margin-bottom: 8px;
 	}

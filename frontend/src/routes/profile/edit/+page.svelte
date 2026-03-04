@@ -355,9 +355,7 @@
 		font-size: 14px;
 	}
 	.divider {
-		height: 1px;
-		background: var(--border);
-		margin: 4px 0;
+		border-top: 1px solid var(--border);
 	}
 
 	/* Collapsible sections */
@@ -455,9 +453,9 @@
 	}
 	.photo-note {
 		color: var(--text-muted);
-		font-size: 12px;
+		font-size: 13px;
 		text-align: center;
-		line-height: 1.5;
+		line-height: 1.4;
 	}
 
 	/* Fields */
@@ -521,16 +519,16 @@
 	}
 	.info-note {
 		margin-top: 12px;
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 13px;
+		line-height: 1.4;
 		color: var(--text-muted);
 		border-top: 1px solid var(--border);
 		padding-top: 12px;
 	}
 	.backup-note {
 		color: var(--text-muted);
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 13px;
+		line-height: 1.4;
 	}
 	.muted {
 		color: var(--text-muted);
