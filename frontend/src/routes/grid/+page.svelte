@@ -57,18 +57,11 @@
 
 	// Filtered + sorted profiles based on active filter
 	let sortedProfiles = $derived.by(() => {
-		if (activeFilter === 'all') {
-			// Group members first sorted by distance, then non-group sorted by distance
-			const groupMembers = allProfiles.filter(p => p.sharedGroups.length > 0);
-			const nonGroup = allProfiles.filter(p => p.sharedGroups.length === 0);
-			groupMembers.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
-			nonGroup.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
-			return [...groupMembers, ...nonGroup];
+		let list = allProfiles;
+		if (activeFilter !== 'all') {
+			list = list.filter(p => p.sharedGroups.some(g => g.id === activeFilter));
 		}
-		// Filter to specific group
-		return allProfiles
-			.filter(p => p.sharedGroups.some(g => g.id === activeFilter))
-			.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+		return [...list].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
 	});
 
 	// Only show visibleCount profiles (for infinite scroll)
