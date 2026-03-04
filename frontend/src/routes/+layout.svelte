@@ -7,7 +7,10 @@
 	import { page } from '$app/state';
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, initIdentitySync, broadcastIdentityChange, cacheIdentityInSession, restoreIdentityFromSession, requestIdentityFromTabs } from '$lib/stores/identity';
+	import { conversationsStore } from '$lib/stores/conversations';
 	import { register } from '$lib/api';
+
+	let totalUnread = $derived($conversationsStore.reduce((sum, c) => sum + c.unreadCount, 0));
 
 	let { children } = $props();
 
@@ -117,6 +120,9 @@
 			</a>
 			<a href="/chat" class="nav-item" class:active={activeNav === 'chat'}>
 				<span class="nav-label">messages</span>
+				{#if totalUnread > 0}
+					<span class="nav-badge">{totalUnread}</span>
+				{/if}
 			</a>
 			<a href="/profile/edit" class="nav-item" class:active={activeNav === 'profile'}>
 				<span class="nav-label">profile</span>
@@ -195,6 +201,15 @@
 		font-size: 14px;
 		font-weight: 400;
 		letter-spacing: 0.01em;
+	}
+	.nav-badge {
+		background: var(--white);
+		color: var(--bg);
+		font-size: 10px;
+		font-weight: 600;
+		padding: 2px 4px;
+		margin-left: 6px;
+		line-height: 1;
 	}
 
 	.loading-screen {
