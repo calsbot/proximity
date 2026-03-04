@@ -196,7 +196,6 @@
 		const text = input.trim();
 		input = '';
 		sending = true;
-		pendingMessage = { text, isMedia: false };
 		try {
 			if (isGroupChat) {
 				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
@@ -208,7 +207,6 @@
 			input = text; // restore on failure
 		} finally {
 			sending = false;
-			pendingMessage = null;
 		}
 	}
 
@@ -379,7 +377,7 @@
 		const file = stagedFile;
 		clearStaged();
 		sending = true;
-		pendingMessage = { text: 'photo', isMedia: true };
+		pendingMessage = { text: 'sending...', isMedia: true };
 		try {
 			if (isGroupChat) {
 				await sendGroupMediaMessage(groupId, file, true, groupMembers.map(m => m.did));
@@ -625,8 +623,7 @@
 					{#if pendingMessage}
 						<div class="msg mine">
 							<div class="bubble sending">
-								<span class="text">{pendingMessage.isMedia ? '📷 sending photo...' : pendingMessage.text}</span>
-								<span class="sending-indicator">sending</span>
+								<span class="text">{pendingMessage.text}</span>
 							</div>
 						</div>
 					{/if}
@@ -660,8 +657,8 @@
 		<form class="composer" class:has-preview={!!stagedPreviewUrl} onsubmit={(e) => { e.preventDefault(); handleSend(); }}>
 			<input type="file" accept="image/*,video/*" onchange={handleFileAttach} hidden bind:this={fileInput} />
 			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo}>+</button>
-			<input type="text" bind:value={input} placeholder={sending ? "sending..." : "message..."} disabled={!convo || sending} />
-			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>{sending ? 'sending...' : 'send'}</button>
+			<input type="text" bind:value={input} placeholder="message..." disabled={!convo || sending} />
+			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>send</button>
 		</form>
 	{/if}
 </div>
@@ -797,13 +794,7 @@
 		border-color: var(--border);
 	}
 	.bubble.sending {
-		opacity: 0.6;
-		gap: 8px;
-	}
-	.sending-indicator {
-		font-size: 11px;
-		color: var(--text-muted);
-		white-space: nowrap;
+		opacity: 0.5;
 	}
 	.text {
 		color: var(--text);

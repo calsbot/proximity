@@ -15,6 +15,7 @@
 	let loading = $state(true);
 
 	// Inline signup fields
+	let showSignup = $state(false);
 	let displayName = $state('');
 	let email = $state('');
 	let creating = $state(false);
@@ -61,6 +62,14 @@
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'failed to join.';
 			joining = false;
+		}
+	}
+
+	function handleEnter() {
+		if (hasIdentity) {
+			handleJoin();
+		} else {
+			showSignup = true;
 		}
 	}
 
@@ -129,11 +138,7 @@
 				<p class="error">{error}</p>
 			{/if}
 
-			{#if hasIdentity}
-				<button class="join-btn" onclick={handleJoin} disabled={joining}>
-					{joining ? 'joining...' : 'enter'}
-				</button>
-			{:else}
+			{#if showSignup && !hasIdentity}
 				<form class="signup" onsubmit={(e) => { e.preventDefault(); handleSignupAndJoin(); }}>
 					<input type="text" bind:value={displayName} placeholder="your name" autofocus />
 					<input type="email" bind:value={email} placeholder="email" />
@@ -147,6 +152,10 @@
 						{creating ? 'creating...' : 'enter'}
 					</button>
 				</form>
+			{:else}
+				<button class="join-btn" onclick={handleEnter} disabled={joining}>
+					{joining ? 'joining...' : 'enter'}
+				</button>
 			{/if}
 		</div>
 

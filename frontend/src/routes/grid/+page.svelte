@@ -4,7 +4,7 @@
 	import { get } from 'svelte/store';
 	import { locationStore, hasLocation, requestLocation } from '$lib/stores/location';
 	import { identityStore } from '$lib/stores/identity';
-	import { distanceMeters, center, neighbors } from '$lib/geo/geohash';
+	import { distanceMeters, center, neighbors, encode, generateDecoyCells } from '$lib/geo/geohash';
 	import { discoverProfiles, updateProfile, listGroups, BASE } from '$lib/api';
 	import { startConversation, initChat } from '$lib/services/chat';
 	import { conversationsStore } from '$lib/stores/conversations';
@@ -46,11 +46,17 @@
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
 
+	// Infinite scroll state
+	const BATCH_SIZE = 18; // 6 rows of 3
+	let visibleCount = $state(BATCH_SIZE);
+	let gridContainer: HTMLElement | undefined = $state();
+	let loadingMore = $state(false);
+
 	// Check if we already have location from the store
 	let hasLoc = $derived($locationStore.geohash !== null);
 
 	// Filtered + sorted profiles based on active filter
-	let profiles = $derived.by(() => {
+	let sortedProfiles = $derived.by(() => {
 		if (activeFilter === 'all') {
 			// Group members first sorted by distance, then non-group sorted by distance
 			const groupMembers = allProfiles.filter(p => p.sharedGroups.length > 0);
@@ -63,6 +69,16 @@
 		return allProfiles
 			.filter(p => p.sharedGroups.some(g => g.id === activeFilter))
 			.sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+	});
+
+	// Only show visibleCount profiles (for infinite scroll)
+	let profiles = $derived(sortedProfiles.slice(0, visibleCount));
+	let hasMore = $derived(visibleCount < sortedProfiles.length);
+
+	// Reset visible count when filter changes
+	$effect(() => {
+		activeFilter;
+		visibleCount = BATCH_SIZE;
 	});
 
 	$effect(() => {
@@ -106,6 +122,27 @@
 		}
 	}
 
+	/**
+	 * Build expanding-radius query cells: precision 7 (~150m), 6 (~1.2km), 5 (~5km), 4 (~40km).
+	 * Each ring uses decoy cells for privacy.
+	 */
+	function buildExpandingCells(lat: number, lon: number): string[] {
+		const cellSet = new Set<string>();
+		// Precision 7 — immediate neighborhood (~150m cells)
+		const p7 = encode(lat, lon, 7);
+		for (const c of generateDecoyCells(p7, 11)) cellSet.add(c);
+		// Precision 6 — wider area (~1.2km cells)
+		const p6 = encode(lat, lon, 6);
+		for (const c of [p6, ...neighbors(p6)]) cellSet.add(c);
+		// Precision 5 — city-level (~5km cells)
+		const p5 = encode(lat, lon, 5);
+		for (const c of [p5, ...neighbors(p5)]) cellSet.add(c);
+		// Precision 4 — region (~40km cells)
+		const p4 = encode(lat, lon, 4);
+		for (const c of [p4, ...neighbors(p4)]) cellSet.add(c);
+		return Array.from(cellSet);
+	}
+
 	async function startScanning(did: string, queryCells: string[]) {
 		loading = true;
 		const loc = get(locationStore);
@@ -118,11 +155,17 @@
 			} catch {}
 		}
 
+		// Build expanding-radius cells if we have coordinates
+		let expandedCells = queryCells;
+		if (loc.lat && loc.lon) {
+			expandedCells = buildExpandingCells(loc.lat, loc.lon);
+		}
+
 		// Fetch groups and profiles in parallel
 		try {
 			await Promise.all([
 				fetchGroups(did),
-				fetchProfiles(queryCells)
+				fetchProfiles(expandedCells)
 			]);
 		} catch {
 			loading = false;
@@ -136,7 +179,11 @@
 					const d = get(identityStore).identity?.did;
 					if (d) {
 						fetchGroups(d);
-						fetchProfiles(currentLoc.queryCells);
+						let cells = currentLoc.queryCells;
+						if (currentLoc.lat && currentLoc.lon) {
+							cells = buildExpandingCells(currentLoc.lat, currentLoc.lon);
+						}
+						fetchProfiles(cells);
 					}
 				}
 			}, 15000);
@@ -180,8 +227,7 @@
 							.filter(g => g.memberDids.has(p.did))
 							.map(g => ({ id: g.id, name: g.name }));
 						return { ...p, distance: dist, sharedGroups };
-					})
-					.filter((p) => p.distance! < 5000);
+					});
 			} else {
 				enriched = data
 					.filter((p) => p.did !== myDid)
@@ -226,7 +272,8 @@
 		if (meters < 500) return '< 500m';
 		if (meters < 1000) return '< 1km';
 		if (meters < 2000) return '~1km';
-		if (meters < 3000) return '~2km';
+		if (meters < 5000) return '~' + Math.round(meters / 1000) + 'km';
+		if (meters < 50000) return '~' + Math.round(meters / 1000) + 'km';
 		return '~' + Math.round(meters / 1000) + 'km';
 	}
 
@@ -280,6 +327,25 @@
 	function setFilter(filterId: string) {
 		activeFilter = filterId;
 	}
+
+	// Infinite scroll: IntersectionObserver on a sentinel element
+	let sentinel: HTMLElement | undefined = $state();
+
+	$effect(() => {
+		if (!sentinel) return;
+		const observer = new IntersectionObserver((entries) => {
+			if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
+				loadingMore = true;
+				// Small delay so the UI can paint
+				setTimeout(() => {
+					visibleCount += BATCH_SIZE;
+					loadingMore = false;
+				}, 100);
+			}
+		}, { rootMargin: '200px' });
+		observer.observe(sentinel);
+		return () => observer.disconnect();
+	});
 </script>
 
 <div class="grid-page" class:map-mode={isMapActive}>
@@ -360,7 +426,7 @@
 					onclick={() => openChat(profile)}
 				>
 					{#if url}
-						<img src={url} alt={profile.displayName} class="tile-img" />
+						<img src={url} alt={profile.displayName} class="tile-img" loading="lazy" />
 					{:else}
 						<div class="tile-placeholder">
 							<span class="tile-initial">{getInitials(profile.displayName)}</span>
@@ -396,6 +462,14 @@
 				</button>
 			{/each}
 		</div>
+
+		<!-- Infinite scroll sentinel -->
+		{#if hasMore}
+			<div class="load-more" bind:this={sentinel}>
+				<span class="pulse"></span>
+			</div>
+		{/if}
+
 		<p class="privacy-hint">distances are approximate to protect everyone's&nbsp;privacy.</p>
 	{/if}
 </div>
@@ -678,6 +752,23 @@
 		color: rgba(255, 255, 255, 0.6);
 		font-size: 12px;
 		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+	}
+	.load-more {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 24px 0;
+	}
+	.load-more .pulse {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--text-muted);
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+	@keyframes pulse {
+		0%, 100% { opacity: 0.3; transform: scale(1); }
+		50% { opacity: 1; transform: scale(1.5); }
 	}
 	@media (min-width: 500px) {
 		.photo-grid {

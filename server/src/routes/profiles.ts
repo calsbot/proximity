@@ -19,8 +19,8 @@ profileRoutes.get('/discover', async (c) => {
 	}
 
 	const cells = cellsParam.split(',').map(s => s.trim()).filter(Boolean);
-	if (cells.length === 0 || cells.length > 20) {
-		return c.json({ error: 'Provide 1-20 cells' }, 400);
+	if (cells.length === 0 || cells.length > 100) {
+		return c.json({ error: 'Provide 1-100 cells' }, 400);
 	}
 
 	// Get blocked DIDs for the requester
@@ -55,8 +55,8 @@ profileRoutes.get('/discover', async (c) => {
 		lastSeen: profiles.lastSeen
 	}).from(profiles).all();
 
-	// Hide profiles not seen in over 2 hours
-	const staleThreshold = Date.now() - 2 * 60 * 60 * 1000;
+	// Hide profiles not seen in over 24 hours
+	const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
 
 	const matching = allProfiles.filter(p => {
 		if (!p.geohashCells) return false;
