@@ -14,6 +14,7 @@
 
 	let input = $state('');
 	let sending = $state(false);
+	let pendingMessage = $state<{ text: string; isMedia: boolean } | null>(null);
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let isGroupChat = $state(false);
 	let groupMembers = $state<Array<{ did: string; displayName: string; boxPublicKey: string | null; role?: string }>>([]);
@@ -122,15 +123,15 @@
 		})();
 	});
 
-	// Auto-scroll on new messages
+	// Auto-scroll on new messages or pending message
 	$effect(() => {
-		if (messages.length > 0) {
-			tick().then(() => {
-				if (messagesEl) {
-					messagesEl.scrollTop = messagesEl.scrollHeight;
-				}
-			});
-		}
+		const _msgs = messages.length;
+		const _pending = pendingMessage;
+		tick().then(() => {
+			if (messagesEl) {
+				messagesEl.scrollTop = messagesEl.scrollHeight;
+			}
+		});
 	});
 
 	// Mark as read when viewing
@@ -192,18 +193,22 @@
 			return;
 		}
 		if (!input.trim() || sending) return;
+		const text = input.trim();
+		input = '';
 		sending = true;
+		pendingMessage = { text, isMedia: false };
 		try {
 			if (isGroupChat) {
-				await sendGroupMessage(groupId, input.trim(), groupMembers.map(m => m.did));
+				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
 			} else {
-				await sendChatMessage(groupId, input.trim());
+				await sendChatMessage(groupId, text);
 			}
-			input = '';
 		} catch (e) {
 			console.error('Failed to send:', e);
+			input = text; // restore on failure
 		} finally {
 			sending = false;
+			pendingMessage = null;
 		}
 	}
 
@@ -374,6 +379,7 @@
 		const file = stagedFile;
 		clearStaged();
 		sending = true;
+		pendingMessage = { text: 'photo', isMedia: true };
 		try {
 			if (isGroupChat) {
 				await sendGroupMediaMessage(groupId, file, true, groupMembers.map(m => m.did));
@@ -384,6 +390,7 @@
 			console.error('Failed to send media:', e);
 		} finally {
 			sending = false;
+			pendingMessage = null;
 		}
 	}
 
@@ -615,6 +622,14 @@
 							{/if}
 						{/each}
 					{/if}
+					{#if pendingMessage}
+						<div class="msg mine">
+							<div class="bubble sending">
+								<span class="text">{pendingMessage.isMedia ? '📷 sending photo...' : pendingMessage.text}</span>
+								<span class="sending-indicator">sending</span>
+							</div>
+						</div>
+					{/if}
 				</div>
 			</div>
 		{/if}
@@ -780,6 +795,15 @@
 	.mine .bubble {
 		background: var(--bg-surface);
 		border-color: var(--border);
+	}
+	.bubble.sending {
+		opacity: 0.6;
+		gap: 8px;
+	}
+	.sending-indicator {
+		font-size: 11px;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 	.text {
 		color: var(--text);
