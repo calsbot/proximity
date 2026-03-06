@@ -165,44 +165,14 @@
 </script>
 
 <div class="page">
-	<!-- Header with + button -->
-	<div class="page-header">
-		<span class="page-title">messages</span>
-		<button class="plus-btn" onclick={() => { showPanel = !showPanel; if (!showPanel) closePanel(); }}>
-			{showPanel ? '×' : '+'}
-		</button>
-	</div>
-
-	<!-- Action panel -->
-	{#if showPanel}
-		<div class="panel">
-			{#if panelView === 'menu'}
-				<button class="panel-item" onclick={() => panelView = 'create'}>
-					<span class="panel-icon">+</span>
-					<span>create group</span>
-				</button>
-			{:else if panelView === 'create'}
-				<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
-					<input type="text" bind:value={groupName} placeholder="group name" autofocus />
-					<div class="form-actions">
-						<button type="submit" disabled={creating || !groupName.trim()}>
-							{creating ? 'creating...' : 'create'}
-						</button>
-						<button type="button" class="small muted" onclick={() => panelView = 'menu'}>back</button>
-					</div>
-				</form>
-			{/if}
-		</div>
-	{/if}
-
 	<!-- Pending invites -->
 	{#if invites.length > 0}
-		<div class="card">
-			<div class="card-header">
+		<div class="page-container">
+			<div class="page-header">
 				<span class="dot orange"></span>
-				<span class="title">invites ({invites.length})</span>
+				<span class="page-title">invites ({invites.length})</span>
 			</div>
-			<div class="card-body">
+			<div>
 				{#each invites as invite}
 					<div class="invite-row">
 						<span class="name">{invite.groupName}</span>
@@ -216,9 +186,35 @@
 		</div>
 	{/if}
 
-	<!-- Conversation list -->
-	<div class="card">
-		<div class="card-body">
+	<!-- Messages -->
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">messages</span>
+			<button class="header-btn" onclick={() => { showPanel = !showPanel; if (!showPanel) closePanel(); }}>
+				{showPanel ? '×' : '+'}
+			</button>
+		</div>
+
+		{#if showPanel}
+			<div class="panel">
+				{#if panelView === 'menu'}
+					<button class="panel-item" onclick={() => panelView = 'create'}>
+						<span class="panel-icon">+</span>
+						<span>create group</span>
+					</button>
+				{:else if panelView === 'create'}
+					<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
+						<input type="text" bind:value={groupName} placeholder="group name" autofocus />
+						<div class="form-actions">
+							<button type="submit" disabled={creating || !groupName.trim()}>
+								{creating ? 'creating...' : 'create'}
+							</button>
+							<button type="button" class="small muted" onclick={() => panelView = 'menu'}>back</button>
+						</div>
+					</form>
+				{/if}
+			</div>
+		{/if}
 			{#if conversations.length === 0}
 				<p class="empty">no conversations yet. tap someone on the grid to start&nbsp;chatting.</p>
 			{:else}
@@ -268,7 +264,6 @@
 					</div>
 				{/each}
 			{/if}
-		</div>
 	</div>
 </div>
 
@@ -278,41 +273,25 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.page-title {
-		color: var(--text-muted);
-		font-size: 14px;
-	}
-	.plus-btn {
-		width: 48px;
-		height: 48px;
-		border-radius: var(--radius);
-		border: 1px solid var(--border);
+	.header-btn {
+		margin-left: auto;
+		border: none;
 		background: transparent;
-		color: var(--text);
-		font-size: 20px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		padding: 0;
+		color: var(--text-muted);
+		font-size: 18px;
+		padding: 0 4px;
+		min-height: auto;
 		line-height: 1;
 	}
 	@media (hover: hover) {
-		.plus-btn:hover {
-			background: var(--bg-hover);
+		.header-btn:hover {
+			color: var(--text);
 		}
 	}
 
 	/* Panel */
 	.panel {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
+		border-bottom: 1px solid var(--border);
 	}
 	.panel-item {
 		display: flex;
@@ -352,33 +331,6 @@
 		gap: 8px;
 	}
 
-	/* Cards */
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-	.card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 12px 16px;
-		border-bottom: 1px solid var(--border);
-	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--text-muted);
-	}
-	.dot.orange { background: var(--warning); }
-	.title {
-		color: var(--text-muted);
-		font-size: 14px;
-	}
-	.card-body {
-		padding: 0;
-	}
 	.empty {
 		color: var(--text-muted);
 		text-align: center;
@@ -447,7 +399,6 @@
 		color: var(--bg);
 		font-size: 11px;
 		padding: 2px 7px;
-		border-radius: 10px;
 		font-weight: 600;
 	}
 
@@ -463,9 +414,6 @@
 		border-bottom: 1px solid var(--border);
 	}
 	.invite-actions { display: flex; gap: 8px; }
-	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
-	button.muted { color: var(--text-muted); border-color: transparent; }
-	button.danger { color: var(--danger); border-color: var(--danger); }
 
 	/* Row wrappers */
 	.row-wrapper {

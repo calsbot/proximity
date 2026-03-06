@@ -201,11 +201,11 @@
 
 <div class="page">
 	<!-- Profile edit card -->
-	<div class="card">
-		<div class="card-header">
-			<span class="title">edit profile</span>
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">edit profile</span>
 		</div>
-		<div class="card-body">
+		<div class="page-content">
 			<div class="avatar-section">
 				{#if avatarUrl}
 					<img src={avatarUrl} alt="avatar" class="avatar" />
@@ -216,7 +216,7 @@
 					<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
 					{uploading ? 'uploading...' : 'upload photo'}
 				</label>
-				<p class="photo-note">Your photo is encrypted locally before upload.</p>
+				<p class="text-caption">your photo is encrypted locally before&nbsp;upload.</p>
 			</div>
 
 			<div class="fields">
@@ -245,10 +245,10 @@
 					{/if}
 				</div>
 
-				<button onclick={handleBackup}>
+				<button class="btn-primary" onclick={handleBackup}>
 					{backupDownloaded ? 'downloaded!' : 'back up profile'}
 				</button>
-				<span class="backup-note">save your identity file somewhere safe. if you lose it, we can't get it&nbsp;back.</span>
+				<span class="text-caption">Save your identity file. It can't be recovered if&nbsp;lost.</span>
 			</div>
 		</div>
 	</div>
@@ -289,7 +289,6 @@
 	<!-- Location privacy -->
 	<div class="card">
 		<button class="card-header toggle-header" onclick={() => showLocation = !showLocation}>
-			<span class="dot green"></span>
 			<span class="title">location privacy</span>
 			<span class="chevron">{showLocation ? '−' : '+'}</span>
 		</button>
@@ -320,7 +319,6 @@
 	{#if blockedUsers.length > 0}
 		<div class="card">
 			<button class="card-header toggle-header" onclick={() => showBlocked = !showBlocked}>
-				<span class="dot"></span>
 				<span class="title">blocked users ({blockedUsers.length})</span>
 				<span class="chevron">{showBlocked ? '−' : '+'}</span>
 			</button>
@@ -344,6 +342,7 @@
 		flex-direction: column;
 		gap: 12px;
 	}
+	/* Secondary cards (collapsible sections) */
 	.card {
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -378,17 +377,11 @@
 		color: var(--text-muted);
 		font-size: 14px;
 	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--text-muted);
-	}
-	.dot.green { background: var(--white); }
 	.title {
 		color: var(--text-muted);
 		font-size: 14px;
 	}
+	/* card-body for collapsible sections */
 	.card-body {
 		padding: 16px;
 	}
@@ -437,11 +430,7 @@
 			background: var(--bg-hover);
 		}
 	}
-	.photo-note {
-		color: var(--text-muted);
-		font-size: 12px;
-		line-height: 1.5;
-	}
+	/* photo-note and backup-note now use global .text-caption */
 
 	/* Fields */
 	.fields {
@@ -500,17 +489,7 @@
 		border-top: 1px solid var(--border);
 		padding-top: 12px;
 	}
-	.backup-note {
-		color: var(--text-muted);
-		font-size: 12px;
-		line-height: 1.5;
-	}
 	.muted {
 		color: var(--text-muted);
-	}
-	button.small {
-		padding: 8px 12px;
-		font-size: 14px;
-		min-height: 40px;
 	}
 </style>

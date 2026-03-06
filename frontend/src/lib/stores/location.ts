@@ -16,7 +16,7 @@ export const locationStore = writable<LocationState>({
 	geohash: null,
 	queryCells: [],
 	permission: 'prompt',
-	precision: 7 // ~150m cells
+	precision: 6 // ~1.2km cells
 });
 
 export const hasLocation = derived(locationStore, ($s) => $s.geohash !== null);
@@ -24,7 +24,7 @@ export const hasLocation = derived(locationStore, ($s) => $s.geohash !== null);
 /**
  * Request geolocation and compute geohash + decoy cells.
  */
-export async function requestLocation(precision: number = 7): Promise<void> {
+export async function requestLocation(precision: number = 6): Promise<void> {
 	if (!navigator.geolocation) {
 		locationStore.update((s) => ({ ...s, permission: 'denied' }));
 		return;

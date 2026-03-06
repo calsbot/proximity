@@ -141,6 +141,27 @@ export async function initChat(): Promise<void> {
 }
 
 /**
+ * Compute the deterministic conversation ID for a peer without creating/persisting the conversation.
+ */
+export async function getConversationId(
+	peerDid: string,
+	peerBoxPublicKey: string
+): Promise<string> {
+	const state = get(identityStore);
+	if (!state.identity) throw new Error('No identity');
+
+	const keys = await deriveConversationKeys(
+		state.identity.boxSecretKey,
+		state.identity.boxPublicKey,
+		state.identity.did,
+		decodeBase64(peerBoxPublicKey),
+		peerDid
+	);
+
+	return keys.groupId;
+}
+
+/**
  * Start a conversation with a peer.
  */
 export async function startConversation(

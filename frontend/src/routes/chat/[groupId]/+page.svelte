@@ -3,7 +3,7 @@
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
 	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft } from '$lib/stores/conversations';
-	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapGroupKeys, distributeGroupKey, rotateGroupKey, handleMediaViewed } from '$lib/services/chat';
+	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapGroupKeys, distributeGroupKey, rotateGroupKey, handleMediaViewed, startConversation } from '$lib/services/chat';
 	import { getGroup, getProfile, leaveGroup, kickMember, inviteToGroup, searchProfiles, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { randomHex, sha256Hex } from '$lib/crypto/util';
@@ -67,6 +67,17 @@
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
 
+	// Pending DM: peer info from URL params, conversation not yet created
+	let pendingPeer = $state<{ did: string; name: string; key: string } | null>(
+		typeof window !== 'undefined' ? (() => {
+			const p = new URLSearchParams(window.location.search);
+			const did = p.get('peerDid');
+			const name = p.get('peerName');
+			const key = p.get('peerKey');
+			return did && name && key ? { did, name, key } : null;
+		})() : null
+	);
+
 	$effect(() => {
 		const did = myDid;
 		if (!did || loaded) return;
@@ -74,22 +85,26 @@
 		(async () => {
 			await initChat();
 
-			// If no local conversation, check if it's a server group
+			// If no local conversation, check if it's a server group or a pending DM
 			if (!$conversationsStore.find(c => c.groupId === groupId)) {
-				try {
-					const group = await getGroup(groupId);
-					isGroupChat = true;
-					groupMembers = group.members;
-					getOrCreateConversation(
-						groupId,
-						'', // no single peer for group
-						group.name,
-						'',
-						null, // no DM keys for group chat
-						true // isGroup
-					);
-				} catch {
-					// Not a group either — genuinely not found
+				if (pendingPeer) {
+					// Pending DM from grid — don't create conversation yet, wait for first message
+				} else {
+					try {
+						const group = await getGroup(groupId);
+						isGroupChat = true;
+						groupMembers = group.members;
+						getOrCreateConversation(
+							groupId,
+							'', // no single peer for group
+							group.name,
+							'',
+							null, // no DM keys for group chat
+							true // isGroup
+						);
+					} catch {
+						// Not a group either — genuinely not found
+					}
 				}
 			} else {
 				const c = $conversationsStore.find(c => c.groupId === groupId);
@@ -187,6 +202,13 @@
 		window.removeEventListener('group-join-denied', handleJoinDenied);
 	});
 
+	async function ensureConversation(): Promise<void> {
+		if (pendingPeer && !$conversationsStore.find(c => c.groupId === groupId)) {
+			await startConversation(pendingPeer.did, pendingPeer.name, pendingPeer.key);
+			pendingPeer = null;
+		}
+	}
+
 	async function handleSend() {
 		if (stagedFile) {
 			await sendStagedMedia();
@@ -197,6 +219,7 @@
 		input = '';
 		sending = true;
 		try {
+			await ensureConversation();
 			if (isGroupChat) {
 				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
 			} else {
@@ -401,6 +424,7 @@
 		sending = true;
 		pendingMessage = { text: 'sending...', isMedia: true };
 		try {
+			await ensureConversation();
 			if (isGroupChat) {
 				await sendGroupMediaMessage(groupId, file, true, groupMembers.map(m => m.did));
 			} else {
@@ -516,8 +540,7 @@
 		<div class="card-header">
 			<div class="header-top">
 				<button class="back" onclick={() => goto('/chat')}>&larr;</button>
-				<span class="dot green"></span>
-				<span class="title">{convo?.peerName ?? 'conversation'}</span>
+				<span class="title">{convo?.peerName ?? pendingPeer?.name ?? 'conversation'}</span>
 			</div>
 			{#if isGroupChat && !hasLeft}
 				<div class="tab-bar">
@@ -608,10 +631,12 @@
 		{#if activeTab === 'chat' || !isGroupChat}
 			<div class="card-body" bind:this={messagesEl}>
 				<div class="messages">
-					{#if !convo}
+					{#if !convo && !pendingPeer}
 						<p class="empty">conversation not found.</p>
 					{:else if messages.length === 0}
-						<div class="system-msg">{isGroupChat ? (isAdmin ? 'you created the group' : convo.peerName + ' was created') : 'conversation started'}</div>
+						{#if isGroupChat}
+						<div class="system-msg">{isAdmin ? 'you created the group' : (convo?.peerName ?? '') + ' was created'}</div>
+					{/if}
 					{:else}
 						{#each messages as msg, i}
 							{#if shouldShowTimeSeparator(i)}
@@ -678,9 +703,9 @@
 		{/if}
 		<form class="composer" class:has-preview={!!stagedPreviewUrl} onsubmit={(e) => { e.preventDefault(); handleSend(); }}>
 			<input type="file" accept="image/*,video/*" onchange={handleFileAttach} hidden bind:this={fileInput} />
-			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo}>+</button>
-			<input type="text" bind:value={input} placeholder="message..." disabled={!convo || sending} />
-			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>send</button>
+			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo && !pendingPeer}>+</button>
+			<input type="text" bind:value={input} placeholder="message..." disabled={(!convo && !pendingPeer) || sending} />
+			<button type="submit" disabled={(!convo && !pendingPeer) || sending || (!input.trim() && !stagedFile)}>send</button>
 		</form>
 	{/if}
 </div>
@@ -722,7 +747,9 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 8px 16px 8px 8px;
+		padding: 0 16px 0 0;
+		min-height: 48px;
+		border-bottom: 1px solid var(--border);
 	}
 	.back {
 		border: none;
@@ -730,7 +757,7 @@
 		font-size: 16px;
 		color: var(--text-muted);
 		min-width: 48px;
-		min-height: 48px;
+		min-height: calc(48px - 1px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -738,46 +765,16 @@
 	@media (hover: hover) {
 		.back:hover { color: var(--text); background: transparent; }
 	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-	}
-	.dot.green { background: var(--white); }
 	.title {
 		color: var(--text-muted);
 		font-size: 14px;
 	}
 	.tab-bar {
-		display: flex;
-		border-top: 1px solid var(--border);
+		border-top: none;
 	}
-	.tab {
-		flex: 1;
-		padding: 10px 16px;
-		font-size: 12px;
-		letter-spacing: 0.02em;
-		border: none;
-		border-radius: 0;
-		background: transparent;
-		color: var(--text-muted);
-		cursor: pointer;
-		min-height: 40px;
-		text-align: center;
+	.tab-bar .tab {
+		min-height: calc(48px - 1px);
 	}
-	.tab:not(:last-child) {
-		border-right: 1px solid var(--border);
-	}
-	.tab.active {
-		background: var(--white);
-		color: var(--bg);
-	}
-	@media (hover: hover) {
-		.tab:hover:not(.active) {
-			background: var(--bg-hover);
-		}
-	}
-
 	/* Message area */
 	.card-body {
 		flex: 1;
@@ -887,8 +884,6 @@
 	.member-row button {
 		margin-left: auto;
 	}
-	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
-	button.muted { color: var(--text-muted); border-color: transparent; }
 	.add-member {
 		display: flex;
 		flex-direction: column;
