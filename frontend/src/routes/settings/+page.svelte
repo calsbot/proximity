@@ -53,10 +53,9 @@
 </script>
 
 <div class="settings">
-	<div class="card">
-		<div class="card-header">
-			<span class="dot"></span>
-			<span class="title">identity</span>
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">identity</span>
 		</div>
 		<div class="card-body">
 			{#if identity.identity}
@@ -86,10 +85,10 @@
 		</div>
 	</div>
 
-	<div class="card">
-		<div class="card-header">
+	<div class="page-container">
+		<div class="page-header">
 			<span class="dot" class:green={ws === 'connected'} class:orange={ws === 'connecting'}></span>
-			<span class="title">connection</span>
+			<span class="page-title">connection</span>
 		</div>
 		<div class="card-body">
 			<div class="row">
@@ -103,10 +102,9 @@
 		</div>
 	</div>
 
-	<div class="card">
-		<div class="card-header">
-			<span class="dot green"></span>
-			<span class="title">location privacy</span>
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">location privacy</span>
 		</div>
 		<div class="card-body">
 			<div class="row">
@@ -130,10 +128,9 @@
 	</div>
 
 	{#if blockedUsers.length > 0}
-		<div class="card">
-			<div class="card-header">
-				<span class="dot"></span>
-				<span class="title">blocked users ({blockedUsers.length})</span>
+		<div class="page-container">
+			<div class="page-header">
+				<span class="page-title">blocked users ({blockedUsers.length})</span>
 			</div>
 			<div class="card-body">
 				{#each blockedUsers as blocked}
@@ -152,30 +149,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
-	}
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-	.card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 12px 16px;
-		border-bottom: 1px solid var(--border);
-	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--text-muted);
-	}
-	.dot.green { background: var(--white); }
-	.dot.orange { background: var(--warning); }
-	.title {
-		color: var(--text-muted);
-		font-size: 13px;
 	}
 	.card-body {
 		padding: 16px;
@@ -206,11 +179,6 @@
 	}
 	.muted {
 		color: var(--text-muted);
-	}
-	button.small {
-		padding: 6px 12px;
-		font-size: 13px;
-		min-height: 36px;
 	}
 	.backup-row {
 		margin-top: 12px;

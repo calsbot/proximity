@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
-	 * Canvas-based square image cropper.
-	 * User can drag to pan, scroll/pinch to zoom, then confirm to get a 500x500 cropped Blob.
+	 * Canvas-based 3:4 image cropper.
+	 * User can drag to pan, scroll/pinch to zoom, then confirm to get a cropped Blob.
 	 */
 
 	interface Props {
@@ -12,7 +12,9 @@
 
 	let { file, oncrop, oncancel }: Props = $props();
 
-	const OUTPUT_SIZE = 500;
+	// 3:4 aspect ratio to match grid tiles
+	const OUTPUT_W = 450;
+	const OUTPUT_H = 600;
 	const MIN_ZOOM = 0.5;
 	const MAX_ZOOM = 4;
 
@@ -33,20 +35,23 @@
 	// Touch zoom state
 	let lastPinchDist = 0;
 
-	// Canvas display size
-	const CANVAS_SIZE = 300;
+	// Canvas display size (3:4)
+	const CANVAS_W = 270;
+	const CANVAS_H = 360;
 
 	$effect(() => {
 		if (!file) return;
 		const image = new Image();
 		image.onload = () => {
 			img = image;
-			// Fit image to canvas — scale so the shorter side fills the canvas
-			const scale = CANVAS_SIZE / Math.min(image.width, image.height);
+			// Fit image to canvas — scale so it fills the 3:4 crop area
+			const scaleW = CANVAS_W / image.width;
+			const scaleH = CANVAS_H / image.height;
+			const scale = Math.max(scaleW, scaleH);
 			zoom = scale;
 			// Center the image
-			panX = (CANVAS_SIZE - image.width * scale) / 2;
-			panY = (CANVAS_SIZE - image.height * scale) / 2;
+			panX = (CANVAS_W - image.width * scale) / 2;
+			panY = (CANVAS_H - image.height * scale) / 2;
 			loaded = true;
 		};
 		image.src = URL.createObjectURL(file);
@@ -66,7 +71,7 @@
 
 	function draw(ctx: CanvasRenderingContext2D) {
 		if (!img) return;
-		ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+		ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
 
 		// Draw the image with current transform
 		ctx.drawImage(img, panX, panY, img.width * zoom, img.height * zoom);
@@ -118,7 +123,7 @@
 			const dist = pinchDistance(e.touches);
 			if (lastPinchDist > 0) {
 				const delta = dist / lastPinchDist;
-				applyZoom(delta, CANVAS_SIZE / 2, CANVAS_SIZE / 2);
+				applyZoom(delta, CANVAS_W / 2, CANVAS_H / 2);
 			}
 			lastPinchDist = dist;
 		}
@@ -138,7 +143,8 @@
 	}
 
 	function applyZoom(factor: number, cx: number, cy: number) {
-		const newZoom = Math.max(MIN_ZOOM * (CANVAS_SIZE / (img?.width ?? CANVAS_SIZE)),
+		const minDim = Math.min(img?.width ?? CANVAS_W, img?.height ?? CANVAS_H);
+		const newZoom = Math.max(MIN_ZOOM * (CANVAS_W / minDim),
 			Math.min(MAX_ZOOM, zoom * factor));
 		// Zoom towards cursor
 		panX = cx - (cx - panX) * (newZoom / zoom);
@@ -148,16 +154,17 @@
 
 	async function confirmCrop() {
 		if (!img) return;
-		// Create an offscreen canvas at output resolution
+		// Create an offscreen canvas at output resolution (3:4)
 		const offscreen = document.createElement('canvas');
-		offscreen.width = OUTPUT_SIZE;
-		offscreen.height = OUTPUT_SIZE;
+		offscreen.width = OUTPUT_W;
+		offscreen.height = OUTPUT_H;
 		const ctx = offscreen.getContext('2d');
 		if (!ctx) return;
 
-		// Scale from display canvas (CANVAS_SIZE) to output (OUTPUT_SIZE)
-		const scale = OUTPUT_SIZE / CANVAS_SIZE;
-		ctx.drawImage(img, panX * scale, panY * scale, img.width * zoom * scale, img.height * zoom * scale);
+		// Scale from display canvas to output
+		const scaleX = OUTPUT_W / CANVAS_W;
+		const scaleY = OUTPUT_H / CANVAS_H;
+		ctx.drawImage(img, panX * scaleX, panY * scaleY, img.width * zoom * scaleX, img.height * zoom * scaleY);
 
 		offscreen.toBlob((blob) => {
 			if (blob) oncrop(blob);
@@ -173,8 +180,8 @@
 		<div class="canvas-container">
 			<canvas
 				bind:this={canvas}
-				width={CANVAS_SIZE}
-				height={CANVAS_SIZE}
+				width={CANVAS_W}
+				height={CANVAS_H}
 				onmousedown={handleMouseDown}
 				onmousemove={handleMouseMove}
 				onmouseup={handleMouseUp}

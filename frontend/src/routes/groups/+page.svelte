@@ -180,12 +180,12 @@
 
 <div class="page">
 	{#if invites.length > 0}
-		<div class="card">
-			<div class="card-header">
+		<div class="page-container">
+			<div class="page-header">
 				<span class="dot orange"></span>
-				<span class="title">pending invites ({invites.length})</span>
+				<span class="page-title">pending invites ({invites.length})</span>
 			</div>
-			<div class="card-body">
+			<div class="page-content">
 				{#each invites as invite}
 					<div class="invite-row">
 						<span class="name">{invite.groupName}</span>
@@ -199,15 +199,14 @@
 		</div>
 	{/if}
 
-	<div class="card">
-		<div class="card-header">
-			<span class="dot"></span>
-			<span class="title">groups</span>
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">groups</span>
 			<button class="small header-btn" onclick={() => showCreate = !showCreate}>
 				{showCreate ? 'cancel' : 'new group'}
 			</button>
 		</div>
-		<div class="card-body">
+		<div class="page-content">
 			{#if showCreate}
 				<div class="create-form">
 					{#if createdInviteLink}
@@ -324,12 +323,11 @@
 	</div>
 
 	{#if leftGroups.length > 0}
-		<div class="card">
-			<div class="card-header">
-				<span class="dot muted-dot"></span>
-				<span class="title">left groups</span>
+		<div class="page-container">
+			<div class="page-header">
+				<span class="page-title">left groups</span>
 			</div>
-			<div class="card-body">
+			<div class="page-content">
 				<div class="list">
 					{#each leftGroups as group}
 						<div class="group-row">
@@ -353,36 +351,10 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-	.card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 14px;
-		border-bottom: 1px solid var(--border);
-	}
-	.dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--text-muted);
-	}
-	.dot.orange { background: #ffaa44; }
-	.title {
-		color: var(--text-muted);
-		font-size: 12px;
-	}
 	.header-btn {
 		margin-left: auto;
 		padding: 3px 8px;
 		font-size: 11px;
-	}
-	.card-body {
-		padding: 16px;
 	}
 	.status {
 		color: var(--text-muted);
@@ -442,8 +414,6 @@
 	}
 	.invite-row:last-child { border-bottom: none; }
 	.actions { display: flex; gap: 6px; }
-	button.small { padding: 4px 10px; font-size: 11px; }
-	button.muted { color: var(--text-muted); border-color: transparent; }
 
 	.create-form {
 		display: flex;
@@ -510,7 +480,6 @@
 		word-break: break-all;
 		line-height: 1.5;
 	}
-	.muted-dot { background: var(--border); }
 	.left-role {
 		color: var(--danger, #ff4444);
 		border-color: var(--danger, #ff4444);

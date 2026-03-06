@@ -19,6 +19,7 @@
 	let { mediaId, mediaKey, mediaNonce, mimeType, onclose }: Props = $props();
 
 	let loading = $state(true);
+	let loadingStatus = $state('fetching...');
 	let error = $state('');
 	let objectUrl = $state<string | null>(null);
 	let canvas = $state<HTMLCanvasElement | undefined>();
@@ -41,9 +42,14 @@
 	$effect(() => {
 		(async () => {
 			try {
+				loadingStatus = 'fetching...';
 				const encryptedBuffer = await getMediaBlob(mediaId);
+				loadingStatus = 'decrypting...';
 				const encryptedData = new Uint8Array(encryptedBuffer);
+				// Yield to UI before heavy crypto work
+				await new Promise(r => setTimeout(r, 0));
 				const decrypted = decryptMedia(encryptedData, mediaNonce, mediaKey);
+				loadingStatus = 'rendering...';
 
 				if (isVideo) {
 					// Videos still use object URL (canvas can't play video)
@@ -107,7 +113,7 @@
 >
 	<div class="viewer-content" onclick={(e) => e.stopPropagation()} oncontextmenu={blockEvent}>
 		{#if loading}
-			<p class="viewer-status">decrypting...</p>
+			<p class="viewer-status">{loadingStatus}</p>
 		{:else if error}
 			<p class="viewer-error">{error}</p>
 		{:else if isVideo && objectUrl}

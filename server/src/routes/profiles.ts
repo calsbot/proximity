@@ -19,8 +19,8 @@ profileRoutes.get('/discover', async (c) => {
 	}
 
 	const cells = cellsParam.split(',').map(s => s.trim()).filter(Boolean);
-	if (cells.length === 0 || cells.length > 20) {
-		return c.json({ error: 'Provide 1-20 cells' }, 400);
+	if (cells.length === 0 || cells.length > 100) {
+		return c.json({ error: 'Provide 1-100 cells' }, 400);
 	}
 
 	// Get blocked DIDs for the requester
@@ -55,8 +55,8 @@ profileRoutes.get('/discover', async (c) => {
 		lastSeen: profiles.lastSeen
 	}).from(profiles).all();
 
-	// Hide profiles not seen in over 2 hours
-	const staleThreshold = Date.now() - 2 * 60 * 60 * 1000;
+	// Hide profiles not seen in over 24 hours
+	const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
 
 	const matching = allProfiles.filter(p => {
 		if (!p.geohashCells) return false;
@@ -68,7 +68,8 @@ profileRoutes.get('/discover', async (c) => {
 		}
 		try {
 			const profileCells: string[] = JSON.parse(p.geohashCells);
-			return profileCells.some(pc => cells.includes(pc));
+			// Support prefix matching: a query cell "gcpuu" (precision 5) matches profile cell "gcpuuz1" (precision 7)
+			return profileCells.some(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc)));
 		} catch {
 			return false;
 		}
@@ -76,7 +77,7 @@ profileRoutes.get('/discover', async (c) => {
 
 	const results = matching.map(p => {
 		const profileCells: string[] = JSON.parse(p.geohashCells!);
-		const matchedCell = profileCells.find(pc => cells.includes(pc)) ?? profileCells[0];
+		const matchedCell = profileCells.find(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc))) ?? profileCells[0];
 		return {
 			did: p.did,
 			displayName: p.displayName,
