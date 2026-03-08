@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
-	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft } from '$lib/stores/conversations';
+	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, diffGroupMembers, addMessage } from '$lib/stores/conversations';
 	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapGroupKeys, distributeGroupKey, rotateGroupKey, handleMediaViewed, startConversation } from '$lib/services/chat';
 	import { getGroup, getProfile, leaveGroup, kickMember, inviteToGroup, searchProfiles, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest } from '$lib/api';
 	import { goto } from '$app/navigation';
@@ -102,6 +102,8 @@
 							null, // no DM keys for group chat
 							true // isGroup
 						);
+						// Seed the known member list so future diffs work
+						diffGroupMembers(groupId, group.members);
 					} catch {
 						// Not a group either — genuinely not found
 					}
@@ -113,6 +115,30 @@
 					try {
 						const group = await getGroup(groupId);
 						groupMembers = group.members;
+
+						// Diff members to generate join/leave system messages
+						const { joined, left } = diffGroupMembers(groupId, group.members);
+						for (const memberDid of joined) {
+							if (memberDid === did) continue; // don't show "you joined"
+							const name = group.members.find(m => m.did === memberDid)?.displayName ?? memberDid.slice(-8);
+							addMessage(groupId, {
+								id: `system-join-${memberDid}-${Date.now()}`,
+								senderDid: 'system',
+								text: `${name} joined the group`,
+								timestamp: new Date().toISOString(),
+								isMine: false,
+							});
+						}
+						for (const memberDid of left) {
+							addMessage(groupId, {
+								id: `system-left-${memberDid}-${Date.now()}`,
+								senderDid: 'system',
+								text: `a member left the group`,
+								timestamp: new Date().toISOString(),
+								isMine: false,
+							});
+						}
+
 						// Bootstrap group encryption keys
 						await bootstrapGroupKeys(groupId);
 						// If admin and no keys exist yet, generate and distribute
@@ -633,11 +659,10 @@
 				<div class="messages">
 					{#if !convo && !pendingPeer}
 						<p class="empty">conversation not found.</p>
-					{:else if messages.length === 0}
-						{#if isGroupChat}
-						<div class="system-msg">{isAdmin ? 'you created the group' : (convo?.peerName ?? '') + ' was created'}</div>
-					{/if}
 					{:else}
+						{#if isGroupChat}
+							<div class="system-msg">{isAdmin ? 'you created the group' : (convo?.peerName ?? '') + ' was created'}</div>
+						{/if}
 						{#each messages as msg, i}
 							{#if shouldShowTimeSeparator(i)}
 								<div class="system-msg">{formatTime(msg.timestamp)}</div>
@@ -725,7 +750,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		height: calc(100dvh - 24px);
+		height: calc(100dvh - var(--nav-height) - var(--safe-bottom) - 24px - 8px);
 	}
 	.card {
 		border: 1px solid var(--border);

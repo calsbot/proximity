@@ -35,6 +35,7 @@ export interface Conversation {
 	lastMessageAt: string;
 	unreadCount: number;
 	left?: boolean; // true if user left or was removed from group
+	knownMemberDids?: string[]; // cached member DIDs for generating join/leave system messages
 	// Serialized conversation keys (Double Ratchet state)
 	keys: SerializedConversationKeys | null;
 	// Group encryption keys: epoch → base64 symmetric key
@@ -244,6 +245,31 @@ export function updateConversationKeys(groupId: string, keys: ConversationKeys):
 		persistConversations(updated);
 		return updated;
 	});
+}
+
+/**
+ * Update cached member list for a group and return join/leave diffs.
+ */
+export function diffGroupMembers(groupId: string, currentMembers: Array<{ did: string; displayName: string }>): { joined: string[]; left: string[] } {
+	const convos = get(conversationsStore);
+	const convo = convos.find(c => c.groupId === groupId);
+	const knownDids = convo?.knownMemberDids ?? [];
+	const currentDids = currentMembers.map(m => m.did);
+
+	const joined = currentDids.filter(d => !knownDids.includes(d));
+	const left = knownDids.filter(d => !currentDids.includes(d));
+
+	// Update the cached member list
+	conversationsStore.update(cs => {
+		const updated = cs.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, knownMemberDids: currentDids };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+
+	return { joined, left };
 }
 
 /**

@@ -7,7 +7,9 @@ import { wsClients } from '../index';
 
 export const groupRoutes = new Hono();
 
-/** Broadcast a system message to all members of a group via WebSocket. */
+/** Broadcast a system message to all online members of a group via WebSocket.
+ *  NOT persisted server-side — the server shouldn't know group activity details.
+ *  Clients store these locally if they're online when it happens. */
 async function broadcastSystemMessage(groupId: string, text: string) {
 	const members = await db.select({ did: groupMembers.did })
 		.from(groupMembers)

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { generateIdentity, saveIdentityToStorage, importIdentityBackup } from '$lib/crypto/identity';
+	import { generateIdentity, saveIdentityToStorage, importIdentityBackup, loadIdentityFromStorage } from '$lib/crypto/identity';
 	import type { Identity } from '$lib/crypto/identity';
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, broadcastIdentityChange, cacheIdentityInSession } from '$lib/stores/identity';
@@ -11,6 +11,15 @@
 	let showDataInfo = $state(false);
 	let error = $state('');
 
+	// If identity already exists (e.g. opened /setup in another tab), redirect away
+	$effect(() => {
+		if ($identityStore.identity) {
+			const params = new URLSearchParams(window.location.search);
+			const redirect = params.get('return') ?? params.get('redirect');
+			goto(redirect?.startsWith('/') ? redirect : '/grid');
+		}
+	});
+
 	async function createIdentity() {
 		if (!displayName.trim()) {
 			error = 'pick a name to get started';
@@ -21,6 +30,17 @@
 		error = '';
 
 		try {
+			// Guard: don't overwrite an existing identity (e.g. created in another tab)
+			const existing = await loadIdentityFromStorage();
+			if (existing) {
+				cacheIdentityInSession(existing);
+				identityStore.set({ identity: existing, loading: false, error: null });
+				const params = new URLSearchParams(window.location.search);
+				const redirect = params.get('return') ?? params.get('redirect');
+				goto(redirect?.startsWith('/') ? redirect : '/grid');
+				return;
+			}
+
 			const identity = generateIdentity();
 			await saveIdentityToStorage(identity);
 
@@ -35,7 +55,8 @@
 			identityStore.set({ identity, loading: false, error: null });
 			broadcastIdentityChange();
 
-			const redirect = new URLSearchParams(window.location.search).get('redirect');
+			const params = new URLSearchParams(window.location.search);
+			const redirect = params.get('return') ?? params.get('redirect');
 			goto(redirect?.startsWith('/') ? redirect : '/grid');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'failed to create identity';
@@ -68,7 +89,8 @@
 			identityStore.set({ identity, loading: false, error: null });
 			broadcastIdentityChange();
 
-			const redirect = new URLSearchParams(window.location.search).get('redirect');
+			const params = new URLSearchParams(window.location.search);
+			const redirect = params.get('return') ?? params.get('redirect');
 			goto(redirect?.startsWith('/') ? redirect : '/grid');
 		} catch (e) {
 			importError = e instanceof Error ? e.message : 'failed to import backup';

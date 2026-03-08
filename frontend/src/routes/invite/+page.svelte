@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { identityStore, cacheIdentityInSession, broadcastIdentityChange } from '$lib/stores/identity';
-	import { getGroup, joinGroupViaInvite, register } from '$lib/api';
-	import { generateIdentity, saveIdentityToStorage, downloadIdentityBackup } from '$lib/crypto/identity';
+	import { identityStore, broadcastIdentityChange, cacheIdentityInSession } from '$lib/stores/identity';
+	import { generateIdentity, saveIdentityToStorage, loadIdentityFromStorage } from '$lib/crypto/identity';
 	import { encodeBase64 } from '$lib/crypto/util';
+	import { getGroup, joinGroupViaInvite, register } from '$lib/api';
 	import { getOrCreateConversation } from '$lib/stores/conversations';
 
 	let groupId = $state('');
@@ -13,15 +13,12 @@
 	let error = $state('');
 	let joining = $state(false);
 	let loading = $state(true);
-
-	// Inline signup fields
 	let showSignup = $state(false);
 	let displayName = $state('');
 	let creating = $state(false);
-	let signupError = $state('');
 
 	let myDid = $derived($identityStore.identity?.did);
-	let hasIdentity = $derived(!!myDid);
+	let identityLoading = $derived($identityStore.loading);
 
 	// Parse fragment on mount
 	$effect(() => {
@@ -49,13 +46,21 @@
 			});
 	});
 
+	function handleEnter() {
+		if (myDid) {
+			handleJoin();
+		} else {
+			showSignup = true;
+		}
+	}
+
 	async function handleJoin() {
-		if (!myDid || !groupId || !inviteKey) return;
+		const did = myDid;
+		if (!did || !groupId || !inviteKey) return;
 		joining = true;
 		error = '';
 		try {
-			await joinGroupViaInvite(groupId, myDid, inviteKey);
-			// Create local conversation so it appears in messages
+			await joinGroupViaInvite(groupId, did, inviteKey);
 			getOrCreateConversation(groupId, '', groupName, '', null, true);
 			goto(`/chat/${encodeURIComponent(groupId)}`);
 		} catch (e) {
@@ -64,24 +69,28 @@
 		}
 	}
 
-	function handleEnter() {
-		if (hasIdentity) {
-			handleJoin();
-		} else {
-			showSignup = true;
-		}
-	}
-
 	async function handleSignupAndJoin() {
 		if (!displayName.trim()) {
-			signupError = 'pick a name';
+			error = 'pick a name to get started';
 			return;
 		}
 
 		creating = true;
-		signupError = '';
+		error = '';
 
 		try {
+			// Guard: don't overwrite an existing identity
+			const existing = await loadIdentityFromStorage();
+			if (existing) {
+				cacheIdentityInSession(existing);
+				identityStore.set({ identity: existing, loading: false, error: null });
+				// Now join with existing identity
+				await joinGroupViaInvite(groupId, existing.did, inviteKey);
+				getOrCreateConversation(groupId, '', groupName, '', null, true);
+				goto(`/chat/${encodeURIComponent(groupId)}`);
+				return;
+			}
+
 			const identity = generateIdentity();
 			await saveIdentityToStorage(identity);
 
@@ -96,54 +105,45 @@
 			identityStore.set({ identity, loading: false, error: null });
 			broadcastIdentityChange();
 
-			try { downloadIdentityBackup(identity); } catch {}
-
+			// Now join the group
 			await joinGroupViaInvite(groupId, identity.did, inviteKey);
-			// Create local conversation so it appears in messages
 			getOrCreateConversation(groupId, '', groupName, '', null, true);
 			goto(`/chat/${encodeURIComponent(groupId)}`);
 		} catch (e) {
-			signupError = e instanceof Error ? e.message : 'something went wrong.';
+			error = e instanceof Error ? e.message : 'failed to create account';
 			creating = false;
 		}
 	}
 </script>
 
 <div class="invite-page">
-	{#if loading}
+	{#if loading || identityLoading}
 		<span class="pulse"></span>
 	{:else if error && !groupName}
 		<p class="expired-text">{error}</p>
 	{:else}
 		<div class="page-container">
 			<div class="page-header">
-				<span class="page-title">{showSignup ? 'get started' : groupName}</span>
+				<span class="page-title">{groupName}</span>
 			</div>
 			<div class="page-content">
-				{#if showSignup && !hasIdentity}
-					<p>invited to {groupName}. pick a display name to&nbsp;join.</p>
+				<p>{memberCount} {memberCount === 1 ? 'person' : 'people'} already here</p>
 
+				{#if error}
+					<p class="error">{error}</p>
+				{/if}
+
+				{#if showSignup}
 					<form onsubmit={(e) => { e.preventDefault(); handleSignupAndJoin(); }}>
 						<label>
 							<span class="text-label">display name</span>
 							<input type="text" bind:value={displayName} autofocus />
 						</label>
-
-						{#if signupError}
-							<p class="error">{signupError}</p>
-						{/if}
-
 						<button class="btn-primary" type="submit" disabled={creating}>
-							{creating ? 'creating...' : 'enter'}
+							{creating ? 'generating keys...' : 'join'}
 						</button>
 					</form>
 				{:else}
-					<p>{memberCount} {memberCount === 1 ? 'person' : 'people'} already here</p>
-
-					{#if error}
-						<p class="error">{error}</p>
-					{/if}
-
 					<button class="btn-primary" onclick={handleEnter} disabled={joining}>
 						{joining ? 'joining...' : 'enter'}
 					</button>
@@ -178,6 +178,10 @@
 		color: var(--text-muted);
 		font-size: 14px;
 	}
+	.error {
+		color: var(--danger);
+		font-size: 14px;
+	}
 	form {
 		display: flex;
 		flex-direction: column;
@@ -187,10 +191,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-	}
-	.error {
-		color: var(--danger);
-		font-size: 14px;
 	}
 	.footer {
 		margin-top: 16px;

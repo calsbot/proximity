@@ -23,30 +23,26 @@
 		return '';
 	});
 
-	// Hide bottom nav on setup/invite pages and inside chat conversations
+	// Hide bottom nav on setup/invite pages only
 	let showNav = $derived.by(() => {
 		const p = page.url.pathname;
 		if (p.startsWith('/setup')) return false;
 		if (p.startsWith('/invite')) return false;
-		if (p.match(/^\/chat\/[^/]+/)) return false;
 		return true;
 	});
 
 	onMount(async () => {
 		initIdentitySync();
 
-		// Try to restore from sessionStorage first (fast path for reloads)
-		const cached = restoreIdentityFromSession();
-		if (cached) {
-			await ensureRegistered(cached);
-			identityStore.set({ identity: cached, loading: false, error: null });
-			checked = true;
-			return;
-		}
-
 		try {
-			// Load directly from IndexedDB/localStorage — no passphrase needed
+			// Always load the canonical identity from IndexedDB (shared across all tabs)
 			const identity = await loadIdentityFromStorage();
+
+			// If sessionStorage has a different identity, overwrite it with the canonical one
+			const cached = restoreIdentityFromSession();
+			if (identity && cached && cached.did !== identity.did) {
+				cacheIdentityInSession(identity);
+			}
 			if (identity) {
 				await ensureRegistered(identity);
 				cacheIdentityInSession(identity);

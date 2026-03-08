@@ -125,6 +125,14 @@ export async function initChat(): Promise<void> {
 			handleMediaViewedEvent(data);
 		}
 		if (data.type === 'system_message') {
+			// Auto-create conversation if needed
+			const convos = get(conversationsStore);
+			if (!convos.find(c => c.groupId === data.groupId)) {
+				try {
+					const group = await getGroup(data.groupId);
+					getOrCreateConversation(data.groupId, '', group.name, '', null, true);
+				} catch {}
+			}
 			const msg: DecryptedMessage = {
 				id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
 				senderDid: 'system',
