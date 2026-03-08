@@ -7,7 +7,10 @@
 	import { page } from '$app/state';
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, initIdentitySync, broadcastIdentityChange, cacheIdentityInSession, restoreIdentityFromSession, requestIdentityFromTabs } from '$lib/stores/identity';
+	import { conversationsStore } from '$lib/stores/conversations';
 	import { register } from '$lib/api';
+
+	let totalUnread = $derived($conversationsStore.reduce((sum, c) => sum + c.unreadCount, 0));
 
 	let { children } = $props();
 
@@ -20,30 +23,26 @@
 		return '';
 	});
 
-	// Hide bottom nav on setup/invite pages and inside chat conversations
+	// Hide bottom nav on setup/invite pages only
 	let showNav = $derived.by(() => {
 		const p = page.url.pathname;
 		if (p.startsWith('/setup')) return false;
 		if (p.startsWith('/invite')) return false;
-		if (p.match(/^\/chat\/[^/]+/)) return false;
 		return true;
 	});
 
 	onMount(async () => {
 		initIdentitySync();
 
-		// Try to restore from sessionStorage first (fast path for reloads)
-		const cached = restoreIdentityFromSession();
-		if (cached) {
-			await ensureRegistered(cached);
-			identityStore.set({ identity: cached, loading: false, error: null });
-			checked = true;
-			return;
-		}
-
 		try {
-			// Load directly from IndexedDB/localStorage — no passphrase needed
+			// Always load the canonical identity from IndexedDB (shared across all tabs)
 			const identity = await loadIdentityFromStorage();
+
+			// If sessionStorage has a different identity, overwrite it with the canonical one
+			const cached = restoreIdentityFromSession();
+			if (identity && cached && cached.did !== identity.did) {
+				cacheIdentityInSession(identity);
+			}
 			if (identity) {
 				await ensureRegistered(identity);
 				cacheIdentityInSession(identity);
@@ -117,6 +116,9 @@
 			</a>
 			<a href="/chat" class="nav-item" class:active={activeNav === 'chat'}>
 				<span class="nav-label">messages</span>
+				{#if totalUnread > 0}
+					<span class="nav-badge">{totalUnread}</span>
+				{/if}
 			</a>
 			<a href="/profile/edit" class="nav-item" class:active={activeNav === 'profile'}>
 				<span class="nav-label">profile</span>
@@ -195,6 +197,15 @@
 		font-size: 14px;
 		font-weight: 400;
 		letter-spacing: 0.01em;
+	}
+	.nav-badge {
+		background: var(--white);
+		color: var(--bg);
+		font-size: 10px;
+		font-weight: 600;
+		padding: 2px 4px;
+		margin-left: 6px;
+		line-height: 1;
 	}
 
 	.loading-screen {

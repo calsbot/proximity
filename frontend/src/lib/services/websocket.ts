@@ -15,6 +15,40 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let myDid: string | null = null;
 const handlers: Set<MessageHandler> = new Set();
 
+// --- Activity tracking ---
+// Tracks whether the user is actually present (tab visible + recent interaction).
+// Heartbeats only update lastSeen on the server when the user is active.
+let lastInteraction = 0;
+let activityListenersAttached = false;
+const ACTIVITY_WINDOW = 5 * 60 * 1000; // 5 minutes — interaction within this window counts as "active"
+
+function markInteraction() {
+	lastInteraction = Date.now();
+}
+
+function attachActivityListeners() {
+	if (activityListenersAttached || typeof window === 'undefined') return;
+	activityListenersAttached = true;
+	const events = ['click', 'touchstart', 'keydown', 'scroll', 'mousemove'];
+	for (const evt of events) {
+		window.addEventListener(evt, markInteraction, { passive: true, capture: true });
+	}
+	// Also mark active when tab becomes visible again
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'visible') markInteraction();
+	});
+	// Initial mark
+	markInteraction();
+}
+
+/** True when the tab is in the foreground AND the user interacted recently */
+function isUserActive(): boolean {
+	if (typeof document === 'undefined') return false;
+	const tabVisible = document.visibilityState === 'visible';
+	const recentInteraction = Date.now() - lastInteraction < ACTIVITY_WINDOW;
+	return tabVisible && recentInteraction;
+}
+
 // Derive WS URL: env var in dev, or derive from current origin in production.
 // Uses /ws path so Vite dev proxy forwards to the backend.
 function getWsUrl(): string {
@@ -32,6 +66,8 @@ const WS_URL = getWsUrl();
  * Connect to the WebSocket server and register with our DID.
  */
 export function connect(did: string): void {
+	attachActivityListeners();
+
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		// Already connected, just re-register
 		ws.send(JSON.stringify({ type: 'register', did }));
@@ -59,11 +95,11 @@ export function connect(did: string): void {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
 		}
-		// Send heartbeat every 60s to keep lastSeen fresh
+		// Heartbeat every 60s — only flags "active" when user is genuinely present
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		heartbeatTimer = setInterval(() => {
 			if (ws && ws.readyState === WebSocket.OPEN) {
-				ws.send(JSON.stringify({ type: 'heartbeat' }));
+				ws.send(JSON.stringify({ type: 'heartbeat', active: isUserActive() }));
 			}
 		}, 60000);
 	};

@@ -277,12 +277,18 @@ export default {
 				}
 
 				if (data.type === 'heartbeat') {
-					const did = (ws as any).did;
-					if (did) touchLastSeen(did);
+					// Only update lastSeen when the client reports the user is
+					// actively viewing the app (tab visible + recent interaction).
+					if (data.active) {
+						const did = (ws as any).did;
+						if (did) touchLastSeen(did);
+					}
 					return;
 				}
 
 				if (data.type === 'message' && data.recipientDid) {
+					const senderDid = (ws as any).did;
+					if (senderDid) touchLastSeen(senderDid);
 					const recipient = wsClients.get(data.recipientDid);
 					if (recipient) {
 						recipient.send(JSON.stringify(data));

@@ -81,6 +81,78 @@
 		confirmDeleteId = null;
 	}
 
+	// Swipe-to-delete state
+	let swipeId = $state<string | null>(null);
+	let swipeX = $state(0);
+	let swipeStartX = 0;
+	let swipeStartY = 0;
+	let swiping = false;
+	let swipeLocked = $state(false);
+	const SWIPE_THRESHOLD = 80;
+
+	function handleSwipeStart(e: TouchEvent, groupId: string) {
+		swipeStartX = e.touches[0].clientX;
+		swipeStartY = e.touches[0].clientY;
+		swiping = false;
+		// Reset any other open swipe
+		if (swipeId && swipeId !== groupId) {
+			swipeId = null;
+			swipeX = 0;
+			swipeLocked = false;
+		}
+		swipeId = groupId;
+	}
+
+	function handleSwipeMove(e: TouchEvent) {
+		if (!swipeId) return;
+		const dx = e.touches[0].clientX - swipeStartX;
+		const dy = e.touches[0].clientY - swipeStartY;
+
+		// If vertical scroll dominates, abort swipe
+		if (!swiping && Math.abs(dy) > Math.abs(dx)) {
+			swipeId = null;
+			swipeX = 0;
+			return;
+		}
+
+		if (Math.abs(dx) > 10) swiping = true;
+
+		if (swiping) {
+			e.preventDefault();
+			// Only allow left swipe (negative dx), cap at threshold
+			swipeX = Math.max(-SWIPE_THRESHOLD - 20, Math.min(0, dx));
+		}
+	}
+
+	function handleSwipeEnd() {
+		if (!swipeId) return;
+		if (swipeX < -SWIPE_THRESHOLD) {
+			// Lock open
+			swipeX = -SWIPE_THRESHOLD;
+			swipeLocked = true;
+		} else {
+			// Snap back
+			swipeX = 0;
+			swipeId = null;
+			swipeLocked = false;
+		}
+		swiping = false;
+	}
+
+	function handleSwipeDelete(groupId: string) {
+		confirmDeleteId = groupId;
+		swipeId = null;
+		swipeX = 0;
+		swipeLocked = false;
+	}
+
+	function resetSwipe() {
+		swipeId = null;
+		swipeX = 0;
+		swipeLocked = false;
+		swiping = false;
+	}
+
 	function timeAgo(dateStr: string): string {
 		const diff = Date.now() - new Date(dateStr).getTime();
 		const mins = Math.floor(diff / 60000);
@@ -93,44 +165,14 @@
 </script>
 
 <div class="page">
-	<!-- Header with + button -->
-	<div class="page-header">
-		<span class="page-title">messages</span>
-		<button class="plus-btn" onclick={() => { showPanel = !showPanel; if (!showPanel) closePanel(); }}>
-			{showPanel ? '×' : '+'}
-		</button>
-	</div>
-
-	<!-- Action panel -->
-	{#if showPanel}
-		<div class="panel">
-			{#if panelView === 'menu'}
-				<button class="panel-item" onclick={() => panelView = 'create'}>
-					<span class="panel-icon">+</span>
-					<span>create group</span>
-				</button>
-			{:else if panelView === 'create'}
-				<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
-					<input type="text" bind:value={groupName} placeholder="group name" autofocus />
-					<div class="form-actions">
-						<button type="submit" disabled={creating || !groupName.trim()}>
-							{creating ? 'creating...' : 'create'}
-						</button>
-						<button type="button" class="small muted" onclick={() => panelView = 'menu'}>back</button>
-					</div>
-				</form>
-			{/if}
-		</div>
-	{/if}
-
 	<!-- Pending invites -->
 	{#if invites.length > 0}
-		<div class="card">
-			<div class="card-header">
+		<div class="page-container">
+			<div class="page-header">
 				<span class="dot orange"></span>
-				<span class="title">invites ({invites.length})</span>
+				<span class="page-title">invites ({invites.length})</span>
 			</div>
-			<div class="card-body">
+			<div>
 				{#each invites as invite}
 					<div class="invite-row">
 						<span class="name">{invite.groupName}</span>
@@ -144,9 +186,35 @@
 		</div>
 	{/if}
 
-	<!-- Conversation list -->
-	<div class="card">
-		<div class="card-body">
+	<!-- Messages -->
+	<div class="page-container">
+		<div class="page-header">
+			<span class="page-title">messages</span>
+			<button class="header-btn" onclick={() => { showPanel = !showPanel; if (!showPanel) closePanel(); }}>
+				{showPanel ? '×' : '+'}
+			</button>
+		</div>
+
+		{#if showPanel}
+			<div class="panel">
+				{#if panelView === 'menu'}
+					<button class="panel-item" onclick={() => panelView = 'create'}>
+						<span class="panel-icon">+</span>
+						<span>create group</span>
+					</button>
+				{:else if panelView === 'create'}
+					<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
+						<input type="text" bind:value={groupName} placeholder="group name" autofocus />
+						<div class="form-actions">
+							<button type="submit" disabled={creating || !groupName.trim()}>
+								{creating ? 'creating...' : 'create'}
+							</button>
+							<button type="button" class="small muted" onclick={() => panelView = 'menu'}>back</button>
+						</div>
+					</form>
+				{/if}
+			</div>
+		{/if}
 			{#if conversations.length === 0}
 				<p class="empty">no conversations yet. tap someone on the grid to start&nbsp;chatting.</p>
 			{:else}
@@ -156,33 +224,46 @@
 							<div class="delete-confirm">
 								<span class="delete-text">delete this chat?</span>
 								<button class="small danger" onclick={() => handleDeleteChat(convo.groupId)}>delete</button>
-								<button class="small muted" onclick={() => confirmDeleteId = null}>cancel</button>
+								<button class="small muted" onclick={() => { confirmDeleteId = null; resetSwipe(); }}>cancel</button>
 							</div>
 						{:else}
-							<a href="/chat/{convo.groupId}" class="row">
-								<div class="row-top">
-									<span class="name">
-										{convo.peerName}
-										{#if convo.isGroup}<span class="group-tag">group</span>{/if}
-										{#if convo.left}<span class="group-tag left-tag">left</span>{/if}
-									</span>
-									<div class="row-meta">
-										{#if convo.lastMessage}
-											<span class="time">{timeAgo(convo.lastMessageAt)}</span>
-										{/if}
-										{#if convo.unreadCount > 0}
-											<span class="badge">{convo.unreadCount}</span>
-										{/if}
-										<button class="delete-btn" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteId = convo.groupId; }} title="delete chat">×</button>
-									</div>
+							<div class="swipe-container"
+								ontouchstart={(e) => handleSwipeStart(e, convo.groupId)}
+								ontouchmove={(e) => handleSwipeMove(e)}
+								ontouchend={handleSwipeEnd}
+							>
+								<!-- Swipe-behind delete label -->
+								<div class="swipe-behind">
+									<button class="swipe-delete-btn" onclick={() => handleSwipeDelete(convo.groupId)}>delete</button>
 								</div>
-								<span class="preview">{lastMessagePreview(convo)}</span>
-							</a>
+
+								<!-- Sliding row content -->
+								<a href="/chat/{convo.groupId}" class="row"
+									style={swipeId === convo.groupId ? `transform: translateX(${swipeX}px)` : ''}
+								>
+									<div class="row-top">
+										<span class="name">
+											{convo.peerName}
+											{#if convo.isGroup}<span class="group-tag">group</span>{/if}
+											{#if convo.left}<span class="group-tag left-tag">left</span>{/if}
+										</span>
+										<div class="row-meta">
+											{#if convo.lastMessage}
+												<span class="time">{timeAgo(convo.lastMessageAt)}</span>
+											{/if}
+											{#if convo.unreadCount > 0}
+												<span class="badge">{convo.unreadCount}</span>
+											{/if}
+											<button class="delete-btn" onclick={(e) => { e.preventDefault(); e.stopPropagation(); confirmDeleteId = convo.groupId; }} title="delete chat">×</button>
+										</div>
+									</div>
+									<span class="preview">{lastMessagePreview(convo)}</span>
+								</a>
+							</div>
 						{/if}
 					</div>
 				{/each}
 			{/if}
-		</div>
 	</div>
 </div>
 
@@ -192,41 +273,25 @@
 		flex-direction: column;
 		gap: 12px;
 	}
-	.page-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-	.page-title {
-		color: var(--text-muted);
-		font-size: 14px;
-	}
-	.plus-btn {
-		width: 48px;
-		height: 48px;
-		border-radius: var(--radius);
-		border: 1px solid var(--border);
+	.header-btn {
+		margin-left: auto;
+		border: none;
 		background: transparent;
-		color: var(--text);
-		font-size: 20px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		padding: 0;
+		color: var(--text-muted);
+		font-size: 18px;
+		padding: 0 4px;
+		min-height: auto;
 		line-height: 1;
 	}
 	@media (hover: hover) {
-		.plus-btn:hover {
-			background: var(--bg-hover);
+		.header-btn:hover {
+			color: var(--text);
 		}
 	}
 
 	/* Panel */
 	.panel {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
+		border-bottom: 1px solid var(--border);
 	}
 	.panel-item {
 		display: flex;
@@ -266,33 +331,6 @@
 		gap: 8px;
 	}
 
-	/* Cards */
-	.card {
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
-	}
-	.card-header {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 12px 16px;
-		border-bottom: 1px solid var(--border);
-	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--text-muted);
-	}
-	.dot.orange { background: var(--warning); }
-	.title {
-		color: var(--text-muted);
-		font-size: 14px;
-	}
-	.card-body {
-		padding: 0;
-	}
 	.empty {
 		color: var(--text-muted);
 		text-align: center;
@@ -361,7 +399,6 @@
 		color: var(--bg);
 		font-size: 11px;
 		padding: 2px 7px;
-		border-radius: 10px;
 		font-weight: 600;
 	}
 
@@ -377,9 +414,6 @@
 		border-bottom: 1px solid var(--border);
 	}
 	.invite-actions { display: flex; gap: 8px; }
-	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
-	button.muted { color: var(--text-muted); border-color: transparent; }
-	button.danger { color: var(--danger); border-color: var(--danger); }
 
 	/* Row wrappers */
 	.row-wrapper {
@@ -388,6 +422,40 @@
 	.row-wrapper:last-child {
 		border-bottom: none;
 	}
+
+	/* Swipe container */
+	.swipe-container {
+		position: relative;
+		overflow: hidden;
+	}
+	.swipe-behind {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: 80px;
+		background: var(--bg-hover);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.swipe-delete-btn {
+		background: transparent;
+		border: none;
+		color: var(--text-secondary, var(--text-muted));
+		font-size: 13px;
+		padding: 8px 16px;
+		cursor: pointer;
+		min-height: auto;
+	}
+	.swipe-container .row {
+		position: relative;
+		background: var(--bg);
+		transition: none;
+		will-change: transform;
+	}
+
+	/* Desktop: hover X button */
 	.delete-btn {
 		border: none;
 		background: transparent;
@@ -413,6 +481,19 @@
 			color: var(--danger);
 		}
 	}
+	/* Hide X button on touch-only devices */
+	@media (hover: none) {
+		.delete-btn {
+			display: none;
+		}
+	}
+	/* Hide swipe-behind on desktop */
+	@media (hover: hover) {
+		.swipe-behind {
+			display: none;
+		}
+	}
+
 	.delete-confirm {
 		display: flex;
 		align-items: center;

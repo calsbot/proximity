@@ -2,8 +2,8 @@
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
-	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft } from '$lib/stores/conversations';
-	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapGroupKeys, distributeGroupKey, rotateGroupKey, handleMediaViewed } from '$lib/services/chat';
+	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, diffGroupMembers, addMessage } from '$lib/stores/conversations';
+	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapGroupKeys, distributeGroupKey, rotateGroupKey, handleMediaViewed, startConversation } from '$lib/services/chat';
 	import { getGroup, getProfile, leaveGroup, kickMember, inviteToGroup, searchProfiles, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { randomHex, sha256Hex } from '$lib/crypto/util';
@@ -14,6 +14,7 @@
 
 	let input = $state('');
 	let sending = $state(false);
+	let pendingMessage = $state<{ text: string; isMedia: boolean } | null>(null);
 	let messagesEl: HTMLDivElement | undefined = $state();
 	let isGroupChat = $state(false);
 	let groupMembers = $state<Array<{ did: string; displayName: string; boxPublicKey: string | null; role?: string }>>([]);
@@ -66,6 +67,17 @@
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
 
+	// Pending DM: peer info from URL params, conversation not yet created
+	let pendingPeer = $state<{ did: string; name: string; key: string } | null>(
+		typeof window !== 'undefined' ? (() => {
+			const p = new URLSearchParams(window.location.search);
+			const did = p.get('peerDid');
+			const name = p.get('peerName');
+			const key = p.get('peerKey');
+			return did && name && key ? { did, name, key } : null;
+		})() : null
+	);
+
 	$effect(() => {
 		const did = myDid;
 		if (!did || loaded) return;
@@ -73,22 +85,28 @@
 		(async () => {
 			await initChat();
 
-			// If no local conversation, check if it's a server group
+			// If no local conversation, check if it's a server group or a pending DM
 			if (!$conversationsStore.find(c => c.groupId === groupId)) {
-				try {
-					const group = await getGroup(groupId);
-					isGroupChat = true;
-					groupMembers = group.members;
-					getOrCreateConversation(
-						groupId,
-						'', // no single peer for group
-						group.name,
-						'',
-						null, // no DM keys for group chat
-						true // isGroup
-					);
-				} catch {
-					// Not a group either — genuinely not found
+				if (pendingPeer) {
+					// Pending DM from grid — don't create conversation yet, wait for first message
+				} else {
+					try {
+						const group = await getGroup(groupId);
+						isGroupChat = true;
+						groupMembers = group.members;
+						getOrCreateConversation(
+							groupId,
+							'', // no single peer for group
+							group.name,
+							'',
+							null, // no DM keys for group chat
+							true // isGroup
+						);
+						// Seed the known member list so future diffs work
+						diffGroupMembers(groupId, group.members);
+					} catch {
+						// Not a group either — genuinely not found
+					}
 				}
 			} else {
 				const c = $conversationsStore.find(c => c.groupId === groupId);
@@ -97,6 +115,30 @@
 					try {
 						const group = await getGroup(groupId);
 						groupMembers = group.members;
+
+						// Diff members to generate join/leave system messages
+						const { joined, left } = diffGroupMembers(groupId, group.members);
+						for (const memberDid of joined) {
+							if (memberDid === did) continue; // don't show "you joined"
+							const name = group.members.find(m => m.did === memberDid)?.displayName ?? memberDid.slice(-8);
+							addMessage(groupId, {
+								id: `system-join-${memberDid}-${Date.now()}`,
+								senderDid: 'system',
+								text: `${name} joined the group`,
+								timestamp: new Date().toISOString(),
+								isMine: false,
+							});
+						}
+						for (const memberDid of left) {
+							addMessage(groupId, {
+								id: `system-left-${memberDid}-${Date.now()}`,
+								senderDid: 'system',
+								text: `a member left the group`,
+								timestamp: new Date().toISOString(),
+								isMine: false,
+							});
+						}
+
 						// Bootstrap group encryption keys
 						await bootstrapGroupKeys(groupId);
 						// If admin and no keys exist yet, generate and distribute
@@ -122,15 +164,15 @@
 		})();
 	});
 
-	// Auto-scroll on new messages
+	// Auto-scroll on new messages or pending message
 	$effect(() => {
-		if (messages.length > 0) {
-			tick().then(() => {
-				if (messagesEl) {
-					messagesEl.scrollTop = messagesEl.scrollHeight;
-				}
-			});
-		}
+		const _msgs = messages.length;
+		const _pending = pendingMessage;
+		tick().then(() => {
+			if (messagesEl) {
+				messagesEl.scrollTop = messagesEl.scrollHeight;
+			}
+		});
 	});
 
 	// Mark as read when viewing
@@ -186,22 +228,32 @@
 		window.removeEventListener('group-join-denied', handleJoinDenied);
 	});
 
+	async function ensureConversation(): Promise<void> {
+		if (pendingPeer && !$conversationsStore.find(c => c.groupId === groupId)) {
+			await startConversation(pendingPeer.did, pendingPeer.name, pendingPeer.key);
+			pendingPeer = null;
+		}
+	}
+
 	async function handleSend() {
 		if (stagedFile) {
 			await sendStagedMedia();
 			return;
 		}
 		if (!input.trim() || sending) return;
+		const text = input.trim();
+		input = '';
 		sending = true;
 		try {
+			await ensureConversation();
 			if (isGroupChat) {
-				await sendGroupMessage(groupId, input.trim(), groupMembers.map(m => m.did));
+				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
 			} else {
-				await sendChatMessage(groupId, input.trim());
+				await sendChatMessage(groupId, text);
 			}
-			input = '';
 		} catch (e) {
 			console.error('Failed to send:', e);
+			input = text; // restore on failure
 		} finally {
 			sending = false;
 		}
@@ -320,6 +372,28 @@
 		}
 	}
 
+	/** Clipboard write with fallback for mobile browsers */
+	function copyToClipboard(text: string): boolean {
+		// Try modern API first
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(text).catch(() => {});
+			return true;
+		}
+		// Fallback: temporary textarea + execCommand
+		const ta = document.createElement('textarea');
+		ta.value = text;
+		ta.style.position = 'fixed';
+		ta.style.left = '-9999px';
+		ta.style.opacity = '0';
+		document.body.appendChild(ta);
+		ta.focus();
+		ta.select();
+		let ok = false;
+		try { ok = document.execCommand('copy'); } catch {}
+		document.body.removeChild(ta);
+		return ok;
+	}
+
 	async function shareInvite() {
 		if (!myDid) return;
 		const key = randomHex(16);
@@ -339,7 +413,7 @@
 			} catch {}
 		}
 		// Fallback to clipboard
-		await navigator.clipboard.writeText(url);
+		copyToClipboard(url);
 		inviteLinkCopied = true;
 		setTimeout(() => { inviteLinkCopied = false; }, 2000);
 	}
@@ -350,7 +424,7 @@
 		const hash = await sha256Hex(key);
 		await setInviteLinkHash(groupId, myDid, hash);
 		const url = `${window.location.origin}/invite#groupId=${encodeURIComponent(groupId)}&key=${encodeURIComponent(key)}`;
-		await navigator.clipboard.writeText(url);
+		copyToClipboard(url);
 		inviteLinkCopied = true;
 		setTimeout(() => { inviteLinkCopied = false; }, 2000);
 	}
@@ -374,7 +448,9 @@
 		const file = stagedFile;
 		clearStaged();
 		sending = true;
+		pendingMessage = { text: 'sending...', isMedia: true };
 		try {
+			await ensureConversation();
 			if (isGroupChat) {
 				await sendGroupMediaMessage(groupId, file, true, groupMembers.map(m => m.did));
 			} else {
@@ -384,6 +460,7 @@
 			console.error('Failed to send media:', e);
 		} finally {
 			sending = false;
+			pendingMessage = null;
 		}
 	}
 
@@ -487,9 +564,10 @@
 <div class="chat" class:map-mode={activeTab === 'map'}>
 	<div class="card">
 		<div class="card-header">
-			<button class="back" onclick={() => goto('/chat')}>&larr;</button>
-			<span class="dot green"></span>
-			<span class="title">{convo?.peerName ?? 'conversation'}</span>
+			<div class="header-top">
+				<button class="back" onclick={() => goto('/chat')}>&larr;</button>
+				<span class="title">{convo?.peerName ?? pendingPeer?.name ?? 'conversation'}</span>
+			</div>
 			{#if isGroupChat && !hasLeft}
 				<div class="tab-bar">
 					<button class="tab" class:active={activeTab === 'chat'} onclick={() => activeTab = 'chat'}>chat</button>
@@ -579,11 +657,12 @@
 		{#if activeTab === 'chat' || !isGroupChat}
 			<div class="card-body" bind:this={messagesEl}>
 				<div class="messages">
-					{#if !convo}
+					{#if !convo && !pendingPeer}
 						<p class="empty">conversation not found.</p>
-					{:else if messages.length === 0}
-						<div class="system-msg">{isGroupChat ? (isAdmin ? 'you created the group' : convo.peerName + ' was created') : 'conversation started'}</div>
 					{:else}
+						{#if isGroupChat}
+							<div class="system-msg">{isAdmin ? 'you created the group' : (convo?.peerName ?? '') + ' was created'}</div>
+						{/if}
 						{#each messages as msg, i}
 							{#if shouldShowTimeSeparator(i)}
 								<div class="system-msg">{formatTime(msg.timestamp)}</div>
@@ -612,6 +691,13 @@
 							</div>
 							{/if}
 						{/each}
+					{/if}
+					{#if pendingMessage}
+						<div class="msg mine">
+							<div class="bubble sending">
+								<span class="text">{pendingMessage.text}</span>
+							</div>
+						</div>
 					{/if}
 				</div>
 			</div>
@@ -642,9 +728,9 @@
 		{/if}
 		<form class="composer" class:has-preview={!!stagedPreviewUrl} onsubmit={(e) => { e.preventDefault(); handleSend(); }}>
 			<input type="file" accept="image/*,video/*" onchange={handleFileAttach} hidden bind:this={fileInput} />
-			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo}>+</button>
-			<input type="text" bind:value={input} placeholder={sending ? "sending..." : "message..."} disabled={!convo || sending} />
-			<button type="submit" disabled={!convo || sending || (!input.trim() && !stagedFile)}>{sending ? 'sending...' : 'send'}</button>
+			<button type="button" class="attach-btn" onclick={() => fileInput?.click()} disabled={!convo && !pendingPeer}>+</button>
+			<input type="text" bind:value={input} placeholder="message..." disabled={(!convo && !pendingPeer) || sending} />
+			<button type="submit" disabled={(!convo && !pendingPeer) || sending || (!input.trim() && !stagedFile)}>send</button>
 		</form>
 	{/if}
 </div>
@@ -664,7 +750,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
-		height: calc(100dvh - 24px);
+		height: calc(100dvh - var(--nav-height) - var(--safe-bottom) - 24px - 8px);
 	}
 	.card {
 		border: 1px solid var(--border);
@@ -676,11 +762,19 @@
 	}
 	.card-header {
 		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 8px 16px 8px 8px;
+		flex-direction: column;
+		gap: 0;
+		padding: 0;
 		border-bottom: 1px solid var(--border);
 		flex-shrink: 0;
+	}
+	.header-top {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 0 16px 0 0;
+		min-height: 48px;
+		border-bottom: 1px solid var(--border);
 	}
 	.back {
 		border: none;
@@ -688,7 +782,7 @@
 		font-size: 16px;
 		color: var(--text-muted);
 		min-width: 48px;
-		min-height: 48px;
+		min-height: calc(48px - 1px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -696,47 +790,16 @@
 	@media (hover: hover) {
 		.back:hover { color: var(--text); background: transparent; }
 	}
-	.dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-	}
-	.dot.green { background: var(--white); }
 	.title {
 		color: var(--text-muted);
 		font-size: 14px;
 	}
 	.tab-bar {
-		margin-left: auto;
-		display: flex;
-		gap: 0;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
+		border-top: none;
 	}
-	.tab {
-		padding: 8px 12px;
-		font-size: 13px;
-		border: none;
-		border-radius: 0;
-		background: transparent;
-		color: var(--text-muted);
-		cursor: pointer;
-		min-height: 36px;
+	.tab-bar .tab {
+		min-height: calc(48px - 1px);
 	}
-	.tab:not(:last-child) {
-		border-right: 1px solid var(--border);
-	}
-	.tab.active {
-		background: var(--white);
-		color: var(--bg);
-	}
-	@media (hover: hover) {
-		.tab:hover:not(.active) {
-			background: var(--bg-hover);
-		}
-	}
-
 	/* Message area */
 	.card-body {
 		flex: 1;
@@ -773,6 +836,9 @@
 	.mine .bubble {
 		background: var(--bg-surface);
 		border-color: var(--border);
+	}
+	.bubble.sending {
+		opacity: 0.5;
 	}
 	.text {
 		color: var(--text);
@@ -843,8 +909,6 @@
 	.member-row button {
 		margin-left: auto;
 	}
-	button.small { padding: 8px 12px; font-size: 14px; min-height: 40px; }
-	button.muted { color: var(--text-muted); border-color: transparent; }
 	.add-member {
 		display: flex;
 		flex-direction: column;
