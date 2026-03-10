@@ -270,12 +270,12 @@
 
 	<!-- Email updates -->
 	<div class="card">
-		<button class="card-header toggle-header" onclick={() => wantsUpdates = !wantsUpdates}>
-			<span class="title">project updates</span>
-			<span class="chevron">{wantsUpdates ? '−' : '+'}</span>
-		</button>
-		{#if wantsUpdates}
-			<div class="card-body">
+		<div class="card-body">
+			<label class="checkbox-row">
+				<input type="checkbox" bind:checked={wantsUpdates} />
+				<span>send me project updates</span>
+			</label>
+			{#if wantsUpdates}
 				<label>
 					<span class="info-label">email</span>
 					<input type="email" bind:value={updateEmail} placeholder="you@example.com" />
@@ -284,8 +284,8 @@
 				<button class="btn-primary" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
 					{subscribing ? 'subscribing...' : subscribed ? 'subscribed!' : 'subscribe'}
 				</button>
-			</div>
-		{/if}
+			{/if}
+		</div>
 	</div>
 
 	<!-- Identity & backup -->
@@ -525,6 +525,20 @@
 		padding-top: 12px;
 	}
 	.muted {
+		color: var(--text-muted);
+	}
+	.checkbox-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+	}
+	.checkbox-row input[type="checkbox"] {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--white);
+	}
+	.checkbox-row span {
+		font-size: 14px;
 		color: var(--text-muted);
 	}
 </style>
