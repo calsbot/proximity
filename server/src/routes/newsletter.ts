@@ -29,7 +29,7 @@ newsletterRoutes.post('/subscribe', async (c) => {
 				email,
 				name: name || 'User',
 				status: 'enabled',
-				lists: [3]
+				lists: [{ id: 3 }]
 			})
 		});
 
