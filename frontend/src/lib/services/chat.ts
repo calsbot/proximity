@@ -15,6 +15,8 @@ import {
 	loadConversations,
 	markConversationLeft,
 	unmarkConversationLeft,
+	setDeliveryTokens,
+	setGroupDeliveryToken,
 	type DecryptedMessage
 } from '$lib/stores/conversations';
 import {
@@ -23,7 +25,14 @@ import {
 	decryptMessage,
 	type ConversationKeys
 } from '$lib/crypto/messaging';
-import { decodeBase64 } from '$lib/crypto/util';
+import { decodeBase64, encodeBase64 } from '$lib/crypto/util';
+import {
+	generateDeliveryToken,
+	hashDeliveryToken,
+	sealMessage,
+	unsealMessage,
+	type SealedInnerEnvelope,
+} from '$lib/crypto/sealed';
 import {
 	generateGroupKey,
 	wrapGroupKeyForMembers,
@@ -40,7 +49,12 @@ import {
 	storeGroupKeys,
 	getMyGroupKeys,
 	uploadMedia,
+	uploadMediaSealed,
 	notifyMediaViewed,
+	registerDeliveryToken,
+	registerGroupDeliveryToken,
+	sendSealedMessage as apiSendSealedMessage,
+	sendSealedGroupMessage as apiSendSealedGroupMessage,
 } from '$lib/api';
 import { connect, onMessage, wsSend, disconnect } from './websocket';
 
@@ -50,6 +64,55 @@ let initialized = false;
 let unsubMessage: (() => void) | null = null;
 // Track server message IDs we've already processed (dedup for gte polling)
 const processedServerIds = new Set<string>();
+
+// --- Delivery Token Persistence (IndexedDB) ---
+
+let myGlobalDeliveryToken: string | null = null;
+
+async function getDeliveryTokenDb() {
+	const { openDB } = await import('idb');
+	return openDB('proximity', 1, {
+		upgrade(db) {
+			if (!db.objectStoreNames.contains('kv')) {
+				db.createObjectStore('kv');
+			}
+		}
+	});
+}
+
+async function loadOrCreateDeliveryToken(did: string): Promise<string> {
+	if (myGlobalDeliveryToken) return myGlobalDeliveryToken;
+
+	try {
+		const db = await getDeliveryTokenDb();
+		const existing = await db.get('kv', 'delivery-token');
+		if (existing) {
+			myGlobalDeliveryToken = existing;
+			return existing;
+		}
+	} catch {}
+
+	// Generate new token
+	const token = generateDeliveryToken();
+	myGlobalDeliveryToken = token;
+
+	// Persist
+	try {
+		const db = await getDeliveryTokenDb();
+		await db.put('kv', token, 'delivery-token');
+	} catch {}
+
+	// Register hash with server
+	try {
+		const tokenHash = await hashDeliveryToken(token);
+		await registerDeliveryToken(did, tokenHash);
+		console.log('[sealed] Delivery token registered with server');
+	} catch (e) {
+		console.error('[sealed] Failed to register delivery token:', e);
+	}
+
+	return token;
+}
 
 /**
  * Initialize the chat service: load conversations, connect WS, start polling.
@@ -63,6 +126,9 @@ export async function initChat(): Promise<void> {
 	initialized = true;
 
 	await loadConversations();
+
+	// Ensure delivery token exists and is registered with server
+	await loadOrCreateDeliveryToken(state.identity.did);
 
 	// Pre-populate processed IDs from existing messages to avoid re-processing
 	// Also find the latest message timestamp to avoid re-fetching old messages
@@ -90,6 +156,9 @@ export async function initChat(): Promise<void> {
 	unsubMessage = onMessage(async (data) => {
 		if (data.type === 'message') {
 			await handleIncomingMessage(data);
+		}
+		if (data.type === 'sealed_message') {
+			await handleIncomingSealedMessage(data);
 		}
 		if (data.type === 'group_message') {
 			await handleIncomingGroupMessage(data);
@@ -216,9 +285,41 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 	};
 	addMessage(groupId, localMsg, updatedKeys);
 
-	// Send via REST API (persisted on server)
-	try {
-		await apiSendMessage({
+	// Choose sealed or unsealed send path
+	if (!convo.isGroup && convo.sealedSenderEnabled && convo.peerDeliveryToken && convo.peerBoxPublicKey) {
+		// Sealed path — server cannot see senderDid
+		const sealed = sealMessage(encrypted, convo.peerBoxPublicKey, convo.peerDeliveryToken, state.identity.did);
+		try {
+			await apiSendSealedMessage(sealed);
+		} catch (e) {
+			console.error('Failed to send sealed message via REST:', e);
+		}
+		wsSend({
+			type: 'sealed_message',
+			recipientDid: sealed.recipientDid,
+			deliveryToken: sealed.deliveryToken,
+			sealedPayload: sealed.sealedPayload,
+			ephemeralPublicKey: sealed.ephemeralPublicKey,
+			nonce: sealed.nonce,
+		});
+	} else {
+		// Unsealed path (first messages before token exchange, or groups)
+		try {
+			await apiSendMessage({
+				groupId: encrypted.groupId,
+				senderDid: encrypted.senderDid,
+				recipientDid: encrypted.recipientDid,
+				epoch: encrypted.epoch,
+				ciphertext: encrypted.ciphertext,
+				nonce: encrypted.nonce,
+				dhPublicKey: encrypted.dhPublicKey,
+				previousCounter: encrypted.previousCounter,
+			});
+		} catch (e) {
+			console.error('Failed to send message via REST:', e);
+		}
+		wsSend({
+			type: 'message',
 			groupId: encrypted.groupId,
 			senderDid: encrypted.senderDid,
 			recipientDid: encrypted.recipientDid,
@@ -228,22 +329,12 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 			dhPublicKey: encrypted.dhPublicKey,
 			previousCounter: encrypted.previousCounter,
 		});
-	} catch (e) {
-		console.error('Failed to send message via REST:', e);
-	}
 
-	// Also send via WebSocket for real-time delivery
-	wsSend({
-		type: 'message',
-		groupId: encrypted.groupId,
-		senderDid: encrypted.senderDid,
-		recipientDid: encrypted.recipientDid,
-		epoch: encrypted.epoch,
-		ciphertext: encrypted.ciphertext,
-		nonce: encrypted.nonce,
-		dhPublicKey: encrypted.dhPublicKey,
-		previousCounter: encrypted.previousCounter,
-	});
+		// After first unsealed DM, trigger token exchange
+		if (!convo.isGroup && !convo.myDeliveryToken && myGlobalDeliveryToken) {
+			await sendTokenExchange(groupId, myGlobalDeliveryToken);
+		}
+	}
 
 	// Track that we sent this epoch so polling won't try to decrypt it again
 	processedServerIds.add(`server-${encrypted.epoch}-${state.identity.did}`);
@@ -270,9 +361,14 @@ export async function sendDMMediaMessage(
 	const fileData = await fileToUint8Array(file);
 	const encrypted = encryptMedia(fileData);
 
-	// Upload encrypted blob to server
+	// Upload encrypted blob to server — use sealed upload if sealed sender is active
 	const blob = new Blob([encrypted.encryptedBlob]);
-	const result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce);
+	let result: { ok: boolean; mediaId: string };
+	if (convo.sealedSenderEnabled && convo.peerDeliveryToken) {
+		result = await uploadMediaSealed(convo.peerDeliveryToken, blob, 'application/octet-stream', viewOnce);
+	} else {
+		result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce);
+	}
 
 	// Create structured JSON payload
 	const payload = JSON.stringify({
@@ -304,9 +400,39 @@ export async function sendDMMediaMessage(
 	};
 	addMessage(groupId, localMsg, updatedKeys);
 
-	// Send via REST
-	try {
-		await apiSendMessage({
+	// Choose sealed or unsealed send path
+	if (convo.sealedSenderEnabled && convo.peerDeliveryToken && convo.peerBoxPublicKey) {
+		const sealed = sealMessage(encMsg, convo.peerBoxPublicKey, convo.peerDeliveryToken, state.identity.did);
+		try {
+			await apiSendSealedMessage(sealed);
+		} catch (e) {
+			console.error('Failed to send sealed media via REST:', e);
+		}
+		wsSend({
+			type: 'sealed_message',
+			recipientDid: sealed.recipientDid,
+			deliveryToken: sealed.deliveryToken,
+			sealedPayload: sealed.sealedPayload,
+			ephemeralPublicKey: sealed.ephemeralPublicKey,
+			nonce: sealed.nonce,
+		});
+	} else {
+		try {
+			await apiSendMessage({
+				groupId: encMsg.groupId,
+				senderDid: encMsg.senderDid,
+				recipientDid: encMsg.recipientDid,
+				epoch: encMsg.epoch,
+				ciphertext: encMsg.ciphertext,
+				nonce: encMsg.nonce,
+				dhPublicKey: encMsg.dhPublicKey,
+				previousCounter: encMsg.previousCounter,
+			});
+		} catch (e) {
+			console.error('Failed to send DM media via REST:', e);
+		}
+		wsSend({
+			type: 'message',
 			groupId: encMsg.groupId,
 			senderDid: encMsg.senderDid,
 			recipientDid: encMsg.recipientDid,
@@ -316,22 +442,7 @@ export async function sendDMMediaMessage(
 			dhPublicKey: encMsg.dhPublicKey,
 			previousCounter: encMsg.previousCounter,
 		});
-	} catch (e) {
-		console.error('Failed to send DM media via REST:', e);
 	}
-
-	// Also send via WebSocket for real-time delivery
-	wsSend({
-		type: 'message',
-		groupId: encMsg.groupId,
-		senderDid: encMsg.senderDid,
-		recipientDid: encMsg.recipientDid,
-		epoch: encMsg.epoch,
-		ciphertext: encMsg.ciphertext,
-		nonce: encMsg.nonce,
-		dhPublicKey: encMsg.dhPublicKey,
-		previousCounter: encMsg.previousCounter,
-	});
 
 	processedServerIds.add(`server-${encMsg.epoch}-${state.identity.did}`);
 }
@@ -354,14 +465,21 @@ export async function sendGroupMessage(groupId: string, text: string, memberDids
 	let ciphertext: string;
 	let nonce: string;
 
+	// For sealed groups, embed senderDid inside the encrypted payload
+	const useSealed = !!(groupKey && convo.groupDeliveryToken);
+	let plainPayload: string;
+	if (useSealed) {
+		plainPayload = JSON.stringify({ t: 'sealed_group', senderDid: state.identity.did, text });
+	} else {
+		plainPayload = text;
+	}
+
 	if (groupKey) {
-		// Encrypt with group key
-		const encrypted = encryptGroupMessage(text, groupKey);
+		const encrypted = encryptGroupMessage(plainPayload, groupKey);
 		ciphertext = encrypted.ciphertext;
 		nonce = encrypted.nonce;
 	} else {
-		// Fallback: base64 plaintext (legacy unencrypted groups)
-		ciphertext = btoa(text);
+		ciphertext = btoa(plainPayload);
 		nonce = btoa('group-msg');
 	}
 
@@ -375,33 +493,54 @@ export async function sendGroupMessage(groupId: string, text: string, memberDids
 	};
 	addMessage(groupId, localMsg);
 
-	// Send via REST to each member (server stores per-recipient)
-	for (const recipientDid of memberDids) {
-		if (recipientDid === state.identity.did) continue;
+	if (useSealed && convo.groupDeliveryToken) {
+		// Sealed path — server doesn't see senderDid
 		try {
-			await apiSendMessage({
+			await apiSendSealedGroupMessage({
 				groupId,
-				senderDid: state.identity.did,
-				recipientDid,
-				epoch,
+				deliveryToken: convo.groupDeliveryToken,
 				ciphertext,
 				nonce,
+				epoch,
 			});
 		} catch (e) {
-			console.error('Failed to send group message to', recipientDid, e);
+			console.error('Failed to send sealed group message via REST:', e);
 		}
+		wsSend({
+			type: 'sealed_group_message',
+			groupId,
+			deliveryToken: convo.groupDeliveryToken,
+			ciphertext,
+			nonce,
+			epoch,
+		});
+	} else {
+		// Unsealed path (no token yet or legacy)
+		for (const recipientDid of memberDids) {
+			if (recipientDid === state.identity.did) continue;
+			try {
+				await apiSendMessage({
+					groupId,
+					senderDid: state.identity.did,
+					recipientDid,
+					epoch,
+					ciphertext,
+					nonce,
+				});
+			} catch (e) {
+				console.error('Failed to send group message to', recipientDid, e);
+			}
+		}
+		wsSend({
+			type: 'group_message',
+			groupId,
+			senderDid: state.identity.did,
+			ciphertext,
+			nonce,
+			epoch,
+			memberDids,
+		});
 	}
-
-	// Also send via WebSocket for real-time delivery
-	wsSend({
-		type: 'group_message',
-		groupId,
-		senderDid: state.identity.did,
-		ciphertext,
-		nonce,
-		epoch,
-		memberDids,
-	});
 }
 
 /**
@@ -439,12 +578,17 @@ export async function sendGroupMediaMessage(
 	const fileData = await fileToUint8Array(file);
 	const encrypted = encryptMedia(fileData);
 
-	// Upload encrypted blob to server
+	// Upload encrypted blob — use sealed upload if group has delivery token
 	const blob = new Blob([encrypted.encryptedBlob]);
-	const result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce);
+	let result: { ok: boolean; mediaId: string };
+	if (convo.groupDeliveryToken) {
+		result = await uploadMediaSealed(convo.groupDeliveryToken, blob, 'application/octet-stream', viewOnce);
+	} else {
+		result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce);
+	}
 
 	// Create structured payload
-	const payload = JSON.stringify({
+	const mediaPayload = JSON.stringify({
 		t: 'media',
 		mediaId: result.mediaId,
 		mediaKey: encrypted.key,
@@ -453,16 +597,21 @@ export async function sendGroupMediaMessage(
 		viewOnce,
 	});
 
+	// For sealed groups, wrap with senderDid inside
+	const useSealed = !!(groupKey && convo.groupDeliveryToken);
+	const plainPayload = useSealed
+		? JSON.stringify({ t: 'sealed_group', senderDid: state.identity.did, text: mediaPayload })
+		: mediaPayload;
+
 	let ciphertext: string;
 	let nonce: string;
 
 	if (groupKey) {
-		const encPayload = encryptGroupMessage(payload, groupKey);
+		const encPayload = encryptGroupMessage(plainPayload, groupKey);
 		ciphertext = encPayload.ciphertext;
 		nonce = encPayload.nonce;
 	} else {
-		// Fallback: base64 plaintext (matches sendGroupMessage legacy path)
-		ciphertext = btoa(payload);
+		ciphertext = btoa(plainPayload);
 		nonce = btoa('group-msg');
 	}
 
@@ -482,33 +631,52 @@ export async function sendGroupMediaMessage(
 	};
 	addMessage(groupId, localMsg);
 
-	// Send via REST to each member
-	for (const recipientDid of memberDids) {
-		if (recipientDid === state.identity.did) continue;
+	if (useSealed && convo.groupDeliveryToken) {
 		try {
-			await apiSendMessage({
+			await apiSendSealedGroupMessage({
 				groupId,
-				senderDid: state.identity.did,
-				recipientDid,
-				epoch,
+				deliveryToken: convo.groupDeliveryToken,
 				ciphertext,
 				nonce,
+				epoch,
 			});
 		} catch (e) {
-			console.error('Failed to send media message to', recipientDid, e);
+			console.error('Failed to send sealed group media via REST:', e);
 		}
+		wsSend({
+			type: 'sealed_group_message',
+			groupId,
+			deliveryToken: convo.groupDeliveryToken,
+			ciphertext,
+			nonce,
+			epoch,
+		});
+	} else {
+		for (const recipientDid of memberDids) {
+			if (recipientDid === state.identity.did) continue;
+			try {
+				await apiSendMessage({
+					groupId,
+					senderDid: state.identity.did,
+					recipientDid,
+					epoch,
+					ciphertext,
+					nonce,
+				});
+			} catch (e) {
+				console.error('Failed to send media message to', recipientDid, e);
+			}
+		}
+		wsSend({
+			type: 'group_message',
+			groupId,
+			senderDid: state.identity.did,
+			ciphertext,
+			nonce,
+			epoch,
+			memberDids,
+		});
 	}
-
-	// WS for real-time
-	wsSend({
-		type: 'group_message',
-		groupId,
-		senderDid: state.identity.did,
-		ciphertext,
-		nonce,
-		epoch,
-		memberDids,
-	});
 }
 
 /**
@@ -667,6 +835,29 @@ async function handleIncomingMessage(data: {
 			updatedKeys = result.updatedKeys;
 		}
 
+		// Check for control messages (sealed sender token exchange)
+		if (!convo.isGroup && plaintext.startsWith('{')) {
+			try {
+				const ctrl = JSON.parse(plaintext);
+				if (ctrl.t === 'delivery_token' && ctrl.token) {
+					console.log(`[sealed] Received peer delivery token from ${data.senderDid.slice(-8)}`);
+					setDeliveryTokens(data.groupId, undefined, ctrl.token);
+
+					// Reciprocate: send our token if we haven't yet
+					const refreshed = get(conversationsStore).find(c => c.groupId === data.groupId);
+					if (!refreshed?.myDeliveryToken && myGlobalDeliveryToken) {
+						await sendTokenExchange(data.groupId, myGlobalDeliveryToken);
+					}
+
+					// Mark processed but don't add to message list
+					processedServerIds.add(dedupId);
+					processedServerIds.add(`server-${data.epoch}-${data.senderDid}`);
+					if (data.id) processedServerIds.add(`srv-${data.id}`);
+					return;
+				}
+			} catch {}
+		}
+
 		// Resolve sender name for group messages
 		let senderName: string | undefined;
 		if (convo.isGroup) {
@@ -679,9 +870,26 @@ async function handleIncomingMessage(data: {
 		// Parse payload (could be media in both group and DM messages)
 		const parsed = parsePayload(plaintext);
 
+		// For sealed group messages, prefer senderDid from decrypted payload
+		const resolvedSenderDid = (parsed.senderDid && parsed.senderDid !== '') ? parsed.senderDid : data.senderDid;
+
+		// Skip our own sealed group messages (server fans out to all members including sender)
+		if (resolvedSenderDid === state.identity!.did) {
+			processedServerIds.add(dedupId);
+			return;
+		}
+
+		// Resolve sender name if we got a real senderDid from sealed payload
+		if (convo.isGroup && resolvedSenderDid !== data.senderDid && resolvedSenderDid !== 'sealed') {
+			try {
+				const profile = await getProfile(resolvedSenderDid);
+				senderName = profile.displayName;
+			} catch {}
+		}
+
 		const msg: DecryptedMessage = {
 			id: dedupId,
-			senderDid: data.senderDid,
+			senderDid: resolvedSenderDid,
 			senderName,
 			text: parsed.text ?? plaintext,
 			timestamp: data.createdAt || new Date().toISOString(),
@@ -727,6 +935,15 @@ function parsePayload(plaintext: string): DecryptedMessage {
 					mimeType: parsed.mimeType,
 					viewOnce: parsed.viewOnce,
 					viewed: false,
+				};
+			}
+			// Sealed group message — senderDid embedded in payload
+			if (parsed.t === 'sealed_group') {
+				// Re-parse in case text itself is a media payload
+				const innerParsed = parsePayload(parsed.text);
+				return {
+					...innerParsed,
+					senderDid: parsed.senderDid || '',
 				};
 			}
 		}
@@ -851,6 +1068,112 @@ function handleKicked(data: { groupId: string }): void {
 }
 
 /**
+ * Handle an incoming sealed message (from WebSocket or polling).
+ * Unseal the outer layer, extract senderDid, then delegate to handleIncomingMessage.
+ */
+async function handleIncomingSealedMessage(data: {
+	sealedPayload: string;
+	ephemeralPublicKey: string;
+	nonce: string;
+	id?: string;
+	createdAt?: string;
+}): Promise<void> {
+	const state = get(identityStore);
+	if (!state.identity) return;
+
+	// Dedup by sealed message ID
+	const dedupId = data.id ? `sealed-${data.id}` : `sealed-${data.sealedPayload.slice(0, 30)}`;
+	if (processedServerIds.has(dedupId)) return;
+
+	try {
+		// Unseal the outer layer
+		const inner = unsealMessage(
+			data.sealedPayload,
+			data.ephemeralPublicKey,
+			data.nonce,
+			state.identity.boxSecretKey
+		);
+
+		console.log(`[sealed] Unsealed message from ${inner.senderDid.slice(-8)} group=${inner.groupId.slice(0, 8)}`);
+
+		// Delegate to existing handler with the inner envelope data
+		await handleIncomingMessage({
+			groupId: inner.groupId,
+			senderDid: inner.senderDid,
+			recipientDid: state.identity.did,
+			epoch: inner.epoch,
+			ciphertext: inner.ciphertext,
+			nonce: inner.nonce,
+			dhPublicKey: inner.dhPublicKey,
+			previousCounter: inner.previousCounter,
+			createdAt: data.createdAt || inner.timestamp,
+			id: data.id,
+		});
+
+		processedServerIds.add(dedupId);
+	} catch (e) {
+		console.error('[sealed] Failed to unseal message:', e);
+	}
+}
+
+/**
+ * Send a delivery token exchange control message (encrypted via Double Ratchet).
+ * This is invisible to the server (looks like normal ciphertext) and invisible
+ * to the UI (detected and suppressed in handleIncomingMessage).
+ */
+async function sendTokenExchange(groupId: string, token: string): Promise<void> {
+	const state = get(identityStore);
+	if (!state.identity) return;
+
+	const convos = get(conversationsStore);
+	const convo = convos.find(c => c.groupId === groupId);
+	if (!convo || !convo.keys || convo.isGroup) return;
+
+	const controlPayload = JSON.stringify({ t: 'delivery_token', token });
+
+	const keys = deserializeKeys(convo.keys);
+	const { encrypted, updatedKeys } = await encryptMessage(keys, state.identity.did, controlPayload);
+
+	// Update keys in store (control message advances the ratchet)
+	updateConversationKeys(groupId, updatedKeys);
+
+	// Store our token in the conversation
+	setDeliveryTokens(groupId, token, undefined);
+
+	// Send via REST (unsealed — this is before sealed sender is active)
+	try {
+		await apiSendMessage({
+			groupId: encrypted.groupId,
+			senderDid: encrypted.senderDid,
+			recipientDid: encrypted.recipientDid,
+			epoch: encrypted.epoch,
+			ciphertext: encrypted.ciphertext,
+			nonce: encrypted.nonce,
+			dhPublicKey: encrypted.dhPublicKey,
+			previousCounter: encrypted.previousCounter,
+		});
+	} catch (e) {
+		console.error('[sealed] Failed to send token exchange via REST:', e);
+	}
+
+	// Also via WS
+	wsSend({
+		type: 'message',
+		groupId: encrypted.groupId,
+		senderDid: encrypted.senderDid,
+		recipientDid: encrypted.recipientDid,
+		epoch: encrypted.epoch,
+		ciphertext: encrypted.ciphertext,
+		nonce: encrypted.nonce,
+		dhPublicKey: encrypted.dhPublicKey,
+		previousCounter: encrypted.previousCounter,
+	});
+
+	processedServerIds.add(`server-${encrypted.epoch}-${state.identity.did}`);
+	console.log(`[sealed] Sent delivery token to ${convo.peerDid.slice(-8)}`);
+}
+
+/**
  * Poll for missed messages.
  */
 function startPolling(): void {
@@ -867,15 +1190,32 @@ async function doPoll(): Promise<void> {
 	if (!state.identity) return;
 
 	try {
-		const messages = await fetchMessages(state.identity.did, lastPollTime ?? undefined);
-		if (messages.length > 0) {
-			console.log(`[chat] Poll found ${messages.length} message(s)`);
+		const result = await fetchMessages(state.identity.did, lastPollTime ?? undefined);
+
+		// Handle new format { messages, sealed } or legacy flat array
+		const messages = Array.isArray(result) ? result : result.messages;
+		const sealed = Array.isArray(result) ? [] : (result.sealed ?? []);
+
+		if (messages.length > 0 || sealed.length > 0) {
+			console.log(`[chat] Poll found ${messages.length} message(s), ${sealed.length} sealed`);
 		}
+
 		for (const msg of messages) {
 			await handleIncomingMessage(msg);
 		}
+
+		for (const s of sealed) {
+			await handleIncomingSealedMessage(s);
+		}
+
 		if (messages.length > 0) {
 			lastPollTime = messages[messages.length - 1].createdAt;
+		}
+		if (sealed.length > 0) {
+			const lastSealed = sealed[sealed.length - 1].createdAt;
+			if (!lastPollTime || lastSealed > lastPollTime) {
+				lastPollTime = lastSealed;
+			}
 		}
 	} catch (e) {
 		console.error('[chat] Poll error:', e);
@@ -904,14 +1244,17 @@ export async function bootstrapGroupKeys(groupId: string): Promise<void> {
 				const senderProfile = await getProfile(wk.senderDid);
 				if (!senderProfile.boxPublicKey) continue;
 
-				const groupKey = unwrapGroupKey(
+				const unwrapped = unwrapGroupKey(
 					wk.wrappedKey,
 					wk.wrappedKeyNonce,
 					decodeBase64(senderProfile.boxPublicKey),
 					state.identity.boxSecretKey
 				);
-				keysMap[wk.epoch] = groupKey;
+				keysMap[wk.epoch] = unwrapped.groupKey;
 				if (wk.epoch > maxEpoch) maxEpoch = wk.epoch;
+				if (unwrapped.deliveryToken) {
+					setGroupDeliveryToken(groupId, unwrapped.deliveryToken);
+				}
 			} catch (e) {
 				console.error(`[chat] Failed to unwrap key epoch=${wk.epoch}:`, e);
 			}
@@ -938,12 +1281,26 @@ export async function distributeGroupKey(
 	if (!state.identity) return;
 
 	const groupKey = generateGroupKey();
-	const wrappedKeys = wrapGroupKeyForMembers(groupKey, state.identity.boxSecretKey, members);
+
+	// Generate a group delivery token for sealed sender
+	const groupToken = generateDeliveryToken();
+	const tokenHash = await hashDeliveryToken(groupToken);
+
+	const wrappedKeys = wrapGroupKeyForMembers(groupKey, state.identity.boxSecretKey, members, groupToken);
 
 	await storeGroupKeys(groupId, state.identity.did, wrappedKeys, epoch);
 
+	// Register group delivery token with server
+	try {
+		await registerGroupDeliveryToken(groupId, tokenHash);
+		console.log(`[sealed] Group delivery token registered for ${groupId.slice(0, 8)}`);
+	} catch (e) {
+		console.error('[sealed] Failed to register group delivery token:', e);
+	}
+
 	// Store locally too
 	updateGroupConversationKeys(groupId, { [epoch]: groupKey }, epoch);
+	setGroupDeliveryToken(groupId, groupToken);
 }
 
 /**
@@ -961,12 +1318,23 @@ export async function rotateGroupKey(
 	const newEpoch = (convo?.groupKeyEpoch ?? 0) + 1;
 
 	const groupKey = generateGroupKey();
-	const wrappedKeys = wrapGroupKeyForMembers(groupKey, state.identity.boxSecretKey, remainingMembers);
+
+	// Rotate the group delivery token too (kicked member had the old one)
+	const groupToken = generateDeliveryToken();
+	const tokenHash = await hashDeliveryToken(groupToken);
+
+	const wrappedKeys = wrapGroupKeyForMembers(groupKey, state.identity.boxSecretKey, remainingMembers, groupToken);
 
 	await storeGroupKeys(groupId, state.identity.did, wrappedKeys, newEpoch);
 
+	// Register new group delivery token
+	try {
+		await registerGroupDeliveryToken(groupId, tokenHash);
+	} catch {}
+
 	// Store locally
 	updateGroupConversationKeys(groupId, { [newEpoch]: groupKey }, newEpoch);
+	setGroupDeliveryToken(groupId, groupToken);
 
 	// Notify other members to fetch new key
 	wsSend({

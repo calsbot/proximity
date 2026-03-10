@@ -41,6 +41,12 @@ export interface Conversation {
 	// Group encryption keys: epoch → base64 symmetric key
 	groupKeys?: Record<number, string>;
 	groupKeyEpoch?: number;
+	// Sealed sender state (DMs)
+	myDeliveryToken?: string; // base64 — our token shared with this peer
+	peerDeliveryToken?: string; // base64 — peer's token they shared with us
+	sealedSenderEnabled?: boolean; // true once both tokens exchanged
+	// Sealed sender state (Groups) — single shared token for all members
+	groupDeliveryToken?: string; // base64 — shared token for this group
 }
 
 interface SerializedConversationKeys {
@@ -333,6 +339,41 @@ export function updateGroupConversationKeys(groupId: string, groupKeysMap: Recor
 				...c,
 				groupKeys: { ...(c.groupKeys ?? {}), ...groupKeysMap },
 				groupKeyEpoch: epoch,
+			};
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Set the group delivery token for a group conversation.
+ */
+export function setGroupDeliveryToken(groupId: string, token: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, groupDeliveryToken: token };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Update sealed sender delivery tokens for a DM conversation.
+ */
+export function setDeliveryTokens(groupId: string, myToken?: string, peerToken?: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			const newMyToken = myToken ?? c.myDeliveryToken;
+			const newPeerToken = peerToken ?? c.peerDeliveryToken;
+			return {
+				...c,
+				myDeliveryToken: newMyToken,
+				peerDeliveryToken: newPeerToken,
+				sealedSenderEnabled: !!(newMyToken && newPeerToken),
 			};
 		});
 		persistConversations(updated);

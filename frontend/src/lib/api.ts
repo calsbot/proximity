@@ -119,18 +119,28 @@ export function sendMessage(data: {
 export function fetchMessages(did: string, since?: string) {
 	const params = new URLSearchParams({ did });
 	if (since) params.set('since', since);
-	return request<Array<{
-		id: string;
-		groupId: string;
-		senderDid: string;
-		recipientDid: string;
-		epoch: number;
-		ciphertext: string;
-		nonce: string;
-		dhPublicKey?: string;
-		previousCounter?: number;
-		createdAt: string;
-	}>>(`/messages?${params}`);
+	return request<{
+		messages: Array<{
+			id: string;
+			groupId: string;
+			senderDid: string;
+			recipientDid: string;
+			epoch: number;
+			ciphertext: string;
+			nonce: string;
+			dhPublicKey?: string;
+			previousCounter?: number;
+			createdAt: string;
+		}>;
+		sealed: Array<{
+			id: string;
+			recipientDid: string;
+			sealedPayload: string;
+			ephemeralPublicKey: string;
+			nonce: string;
+			createdAt: string;
+		}>;
+	}>(`/messages?${params}`);
 }
 
 // --- Groups ---
@@ -338,6 +348,68 @@ export function notifyMediaViewed(mediaId: string, did: string) {
 	return request<{ ok: boolean }>(`/media/${mediaId}/viewed`, {
 		method: 'POST',
 		body: JSON.stringify({ did })
+	});
+}
+
+// --- Sealed Media Upload ---
+
+export async function uploadMediaSealed(deliveryToken: string, encryptedFile: Blob, mimeType: string, viewOnce?: boolean) {
+	const formData = new FormData();
+	formData.append('file', encryptedFile);
+	formData.append('deliveryToken', deliveryToken);
+	formData.append('mimeType', mimeType);
+	if (viewOnce) formData.append('viewOnce', 'true');
+
+	const res = await fetch(`${BASE}/media/upload-sealed`, {
+		method: 'POST',
+		body: formData
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({}));
+		throw new Error(body.error || `sealed upload failed: ${res.status}`);
+	}
+	return res.json() as Promise<{ ok: boolean; mediaId: string }>;
+}
+
+// --- Sealed Sender ---
+
+export function registerDeliveryToken(did: string, tokenHash: string) {
+	return request<{ ok: boolean }>('/messages/delivery-token', {
+		method: 'POST',
+		body: JSON.stringify({ did, tokenHash })
+	});
+}
+
+export function sendSealedMessage(data: {
+	recipientDid: string;
+	deliveryToken: string;
+	sealedPayload: string;
+	ephemeralPublicKey: string;
+	nonce: string;
+}) {
+	return request<{ ok: boolean; id: string }>('/messages/sealed', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function registerGroupDeliveryToken(groupId: string, tokenHash: string) {
+	return request<{ ok: boolean }>('/messages/group-delivery-token', {
+		method: 'POST',
+		body: JSON.stringify({ groupId, tokenHash })
+	});
+}
+
+export function sendSealedGroupMessage(data: {
+	groupId: string;
+	deliveryToken: string;
+	ciphertext: string;
+	nonce: string;
+	epoch: number;
+}) {
+	return request<{ ok: boolean; ids: string[] }>('/messages/sealed-group', {
+		method: 'POST',
+		body: JSON.stringify(data)
 	});
 }
 

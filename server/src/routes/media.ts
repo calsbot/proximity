@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { media } from '../db/schema';
+import { media, deliveryTokens } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 
@@ -32,6 +32,49 @@ mediaRoutes.post('/upload', async (c) => {
 		uploaderDid,
 		encryptedBlob: Buffer.from(encryptedBlob),
 		mediaKeyWrapped: mediaKeyWrapped ?? '',
+		mimeType,
+		size: encryptedBlob.length,
+		viewOnce,
+		expiresAt: viewOnce ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null,
+	});
+
+	return c.json({ ok: true, mediaId: id });
+});
+
+/**
+ * POST /media/upload-sealed
+ * Upload an encrypted media blob without revealing uploaderDid.
+ * Authenticates via delivery token instead.
+ */
+mediaRoutes.post('/upload-sealed', async (c) => {
+	const formData = await c.req.formData();
+	const file = formData.get('file') as File | null;
+	const deliveryToken = formData.get('deliveryToken') as string | null;
+	const mimeType = formData.get('mimeType') as string | null;
+	const viewOnce = formData.get('viewOnce') === 'true';
+
+	if (!file || !deliveryToken || !mimeType) {
+		return c.json({ error: 'file, deliveryToken, and mimeType required' }, 400);
+	}
+
+	// Validate delivery token
+	const hasher = new Bun.CryptoHasher('sha256');
+	hasher.update(deliveryToken);
+	const tokenHash = hasher.digest('hex');
+	const token = await db.select().from(deliveryTokens).where(eq(deliveryTokens.tokenHash, tokenHash)).get();
+	if (!token) {
+		return c.json({ error: 'invalid delivery token' }, 403);
+	}
+
+	const id = nanoid();
+	const buffer = await file.arrayBuffer();
+	const encryptedBlob = new Uint8Array(buffer);
+
+	await db.insert(media).values({
+		id,
+		uploaderDid: null, // Anonymous — no DID stored for sealed uploads
+		encryptedBlob: Buffer.from(encryptedBlob),
+		mediaKeyWrapped: '',
 		mimeType,
 		size: encryptedBlob.length,
 		viewOnce,

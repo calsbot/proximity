@@ -42,7 +42,7 @@ export const encryptedMessages = sqliteTable('encrypted_messages', {
 
 export const media = sqliteTable('media', {
 	id: text('id').primaryKey(), // nanoid
-	uploaderDid: text('uploader_did').notNull().references(() => profiles.did),
+	uploaderDid: text('uploader_did'), // nullable for sealed uploads; references profiles.did when set
 	encryptedBlob: blob('encrypted_blob'), // encrypted file bytes stored as blob
 	mediaKeyWrapped: text('media_key_wrapped'), // base64, key encrypted for self
 	mimeType: text('mime_type').notNull(),
@@ -95,6 +95,30 @@ export const groupKeys = sqliteTable('group_keys', {
 	wrappedKeyNonce: text('wrapped_key_nonce').notNull(), // base64 nonce for unwrapping
 	senderDid: text('sender_did').notNull(), // who wrapped this key (need their boxPublicKey to unwrap)
 	epoch: integer('epoch').notNull().default(0), // key rotation counter
+	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
+});
+
+// --- Sealed sender tables ---
+
+export const deliveryTokens = sqliteTable('delivery_tokens', {
+	did: text('did').primaryKey(), // user who registered this token
+	tokenHash: text('token_hash').notNull(), // SHA-256 hex of the actual token (server never sees plaintext)
+	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
+});
+
+export const sealedMessages = sqliteTable('sealed_messages', {
+	id: text('id').primaryKey(), // nanoid
+	recipientDid: text('recipient_did').notNull(), // only field linking to a user
+	deliveryTokenHash: text('delivery_token_hash').notNull(), // proves sender has a valid token
+	sealedPayload: text('sealed_payload').notNull(), // base64 — outer nacl.box ciphertext (contains encrypted inner envelope)
+	ephemeralPublicKey: text('ephemeral_public_key').notNull(), // base64 — sender's ephemeral X25519 public key for unsealing
+	nonce: text('nonce').notNull(), // base64 — nonce for outer nacl.box
+	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
+});
+
+export const groupDeliveryTokens = sqliteTable('group_delivery_tokens', {
+	groupId: text('group_id').primaryKey(), // one token per group
+	tokenHash: text('token_hash').notNull(), // SHA-256 hex of the group delivery token
 	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
 });
 

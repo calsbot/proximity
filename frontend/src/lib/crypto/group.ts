@@ -14,17 +14,20 @@ export function generateGroupKey(): string {
 	return encodeBase64(key);
 }
 
-/** Wrap the group key for each member using their boxPublicKey. */
+/** Wrap the group key (+ optional delivery token) for each member using their boxPublicKey. */
 export function wrapGroupKeyForMembers(
 	groupKeyB64: string,
 	myBoxSecretKey: Uint8Array,
-	members: Array<{ did: string; boxPublicKey: string }>
+	members: Array<{ did: string; boxPublicKey: string }>,
+	deliveryToken?: string
 ): Array<{ memberDid: string; wrappedKey: string; wrappedKeyNonce: string }> {
+	// Bundle delivery token with group key if provided
+	const payload = deliveryToken ? `${groupKeyB64}:${deliveryToken}` : groupKeyB64;
 	return members
 		.filter(m => m.boxPublicKey)
 		.map(m => {
 			const { wrappedKey, nonce } = wrapKeyForRecipient(
-				groupKeyB64,
+				payload,
 				myBoxSecretKey,
 				decodeBase64(m.boxPublicKey)
 			);
@@ -36,14 +39,19 @@ export function wrapGroupKeyForMembers(
 		});
 }
 
-/** Unwrap a group key that was encrypted for us. */
+/** Unwrap a group key (+ optional delivery token) that was encrypted for us. */
 export function unwrapGroupKey(
 	wrappedKey: string,
 	nonce: string,
 	senderBoxPublicKey: Uint8Array,
 	myBoxSecretKey: Uint8Array
-): string {
-	return unwrapKey(wrappedKey, nonce, senderBoxPublicKey, myBoxSecretKey);
+): { groupKey: string; deliveryToken?: string } {
+	const payload = unwrapKey(wrappedKey, nonce, senderBoxPublicKey, myBoxSecretKey);
+	const parts = payload.split(':');
+	if (parts.length >= 2) {
+		return { groupKey: parts[0], deliveryToken: parts.slice(1).join(':') };
+	}
+	return { groupKey: payload };
 }
 
 /** Encrypt a group message with the shared symmetric key. */
