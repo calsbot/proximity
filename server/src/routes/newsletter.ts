@@ -30,7 +30,8 @@ newsletterRoutes.post('/subscribe', async (c) => {
 				email,
 				name: email.split('@')[0],
 				status: 'enabled',
-				lists: [3]
+				lists: [3],
+				attribs: { consent: 'checkbox_opt_in', consent_at: new Date().toISOString() }
 			})
 		});
 
