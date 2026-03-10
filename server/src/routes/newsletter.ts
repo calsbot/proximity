@@ -28,7 +28,7 @@ newsletterRoutes.post('/subscribe', async (c) => {
 			headers,
 			body: JSON.stringify({
 				email,
-				name: name || 'User',
+				name: email.split('@')[0],
 				status: 'enabled',
 				lists: [3]
 			})
