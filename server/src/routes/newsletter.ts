@@ -29,7 +29,7 @@ newsletterRoutes.post('/subscribe', async (c) => {
 				email,
 				name: name || 'User',
 				status: 'enabled',
-				lists: [1] // Default list ID
+				lists: [3]
 			})
 		});
 

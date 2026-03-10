@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { identityStore } from '$lib/stores/identity';
 	import { locationStore, requestLocation } from '$lib/stores/location';
-	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, BASE } from '$lib/api';
+	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, BASE } from '$lib/api';
 	import { encryptMedia, decryptMedia, fileToUint8Array, bytesToObjectUrl } from '$lib/crypto/media';
 	import { loadIdentityFromStorage, downloadIdentityBackup } from '$lib/crypto/identity';
 	import { wsStatus } from '$lib/services/websocket';
@@ -34,6 +34,10 @@
 	let showIdentity = $state(false);
 	let showLocation = $state(false);
 	let showBlocked = $state(false);
+	let wantsUpdates = $state(false);
+	let updateEmail = $state('');
+	let subscribing = $state(false);
+	let subscribed = $state(false);
 
 	$effect(() => {
 		const did = myDid;
@@ -183,6 +187,17 @@
 		} catch {}
 	}
 
+	async function handleSubscribe() {
+		if (!updateEmail.trim()) return;
+		subscribing = true;
+		try {
+			await subscribeNewsletter(updateEmail.trim(), displayName.trim() || 'User');
+			subscribed = true;
+			setTimeout(() => { subscribed = false; }, 2000);
+		} catch {}
+		subscribing = false;
+	}
+
 	async function handleBackup() {
 		try {
 			const id = await loadIdentityFromStorage();
@@ -251,6 +266,26 @@
 				<span class="text-caption">Save your identity file. It can't be recovered if&nbsp;lost.</span>
 			</div>
 		</div>
+	</div>
+
+	<!-- Email updates -->
+	<div class="card">
+		<button class="card-header toggle-header" onclick={() => wantsUpdates = !wantsUpdates}>
+			<span class="title">project updates</span>
+			<span class="chevron">{wantsUpdates ? '−' : '+'}</span>
+		</button>
+		{#if wantsUpdates}
+			<div class="card-body">
+				<label>
+					<span class="info-label">email</span>
+					<input type="email" bind:value={updateEmail} placeholder="you@example.com" />
+				</label>
+				<p class="info-note" style="margin-top: 8px; border-top: none; padding-top: 0;">never linked to your account.</p>
+				<button class="btn-primary" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
+					{subscribing ? 'subscribing...' : subscribed ? 'subscribed!' : 'subscribe'}
+				</button>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Identity & backup -->

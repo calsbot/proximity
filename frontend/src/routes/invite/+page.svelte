@@ -3,7 +3,7 @@
 	import { identityStore, broadcastIdentityChange, cacheIdentityInSession } from '$lib/stores/identity';
 	import { generateIdentity, saveIdentityToStorage, loadIdentityFromStorage } from '$lib/crypto/identity';
 	import { encodeBase64 } from '$lib/crypto/util';
-	import { getGroup, joinGroupViaInvite, register } from '$lib/api';
+	import { getGroup, joinGroupViaInvite, register, subscribeNewsletter } from '$lib/api';
 	import { getOrCreateConversation } from '$lib/stores/conversations';
 
 	let groupId = $state('');
@@ -16,6 +16,8 @@
 	let showSignup = $state(false);
 	let displayName = $state('');
 	let creating = $state(false);
+	let wantsUpdates = $state(false);
+	let email = $state('');
 
 	let myDid = $derived($identityStore.identity?.did);
 	let identityLoading = $derived($identityStore.loading);
@@ -105,6 +107,10 @@
 			identityStore.set({ identity, loading: false, error: null });
 			broadcastIdentityChange();
 
+			if (wantsUpdates && email.trim()) {
+				subscribeNewsletter(email.trim(), displayName.trim()).catch(() => {});
+			}
+
 			// Now join the group
 			await joinGroupViaInvite(groupId, identity.did, inviteKey);
 			getOrCreateConversation(groupId, '', groupName, '', null, true);
@@ -139,6 +145,17 @@
 							<span class="text-label">display name</span>
 							<input type="text" bind:value={displayName} autofocus />
 						</label>
+						<label class="checkbox-row">
+							<input type="checkbox" bind:checked={wantsUpdates} />
+							<span>send me project updates</span>
+						</label>
+						{#if wantsUpdates}
+							<label>
+								<span class="text-label">email</span>
+								<input type="email" bind:value={email} placeholder="you@example.com" />
+							</label>
+							<p class="text-caption">never linked to your account.</p>
+						{/if}
 						<button class="btn-primary" type="submit" disabled={creating}>
 							{creating ? 'generating keys...' : 'join'}
 						</button>
@@ -191,6 +208,20 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
+	}
+	.checkbox-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+	}
+	.checkbox-row input[type="checkbox"] {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--white);
+	}
+	.checkbox-row span {
+		font-size: 14px;
+		color: var(--text-muted);
 	}
 	.footer {
 		margin-top: 16px;

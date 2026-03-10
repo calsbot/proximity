@@ -3,13 +3,15 @@
 	import type { Identity } from '$lib/crypto/identity';
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, broadcastIdentityChange, cacheIdentityInSession } from '$lib/stores/identity';
-	import { register } from '$lib/api';
+	import { register, subscribeNewsletter } from '$lib/api';
 	import { goto } from '$app/navigation';
 
 	let displayName = $state('');
 	let creating = $state(false);
 	let showDataInfo = $state(false);
 	let error = $state('');
+	let wantsUpdates = $state(false);
+	let email = $state('');
 
 	// If identity already exists (e.g. opened /setup in another tab), redirect away
 	$effect(() => {
@@ -54,6 +56,10 @@
 			cacheIdentityInSession(identity);
 			identityStore.set({ identity, loading: false, error: null });
 			broadcastIdentityChange();
+
+			if (wantsUpdates && email.trim()) {
+				subscribeNewsletter(email.trim(), displayName.trim()).catch(() => {});
+			}
 
 			const params = new URLSearchParams(window.location.search);
 			const redirect = params.get('return') ?? params.get('redirect');
@@ -112,6 +118,18 @@
 				<input type="text" bind:value={displayName} autofocus />
 			</label>
 
+			<label class="checkbox-row">
+				<input type="checkbox" bind:checked={wantsUpdates} />
+				<span>send me project updates</span>
+			</label>
+			{#if wantsUpdates}
+				<label>
+					<span class="text-label">email</span>
+					<input type="email" bind:value={email} placeholder="you@example.com" />
+				</label>
+				<p class="text-caption">never linked to your account.</p>
+			{/if}
+
 			{#if error}
 				<p class="error">{error}</p>
 			{/if}
@@ -155,6 +173,20 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
+	}
+	.checkbox-row {
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
+	}
+	.checkbox-row input[type="checkbox"] {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--white);
+	}
+	.checkbox-row span {
+		font-size: 14px;
+		color: var(--text-muted);
 	}
 	.error {
 		color: var(--danger);
