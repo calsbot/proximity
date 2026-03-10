@@ -18,24 +18,42 @@ newsletterRoutes.post('/subscribe', async (c) => {
 	const adminUser = process.env.LISTMONK_ADMIN_USER || 'admin';
 	const adminPass = process.env.LISTMONK_ADMIN_PASSWORD || 'admin';
 
+	const authHeader = 'Basic ' + btoa(`${adminUser}:${adminPass}`);
+	const headers = { 'Content-Type': 'application/json', 'Authorization': authHeader };
+
 	try {
+		// Step 1: Create subscriber
 		const res = await fetch(`${listmonkUrl}/api/subscribers`, {
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Authorization': 'Basic ' + btoa(`${adminUser}:${adminPass}`)
-			},
+			headers,
 			body: JSON.stringify({
 				email,
 				name: name || 'User',
 				status: 'enabled',
-				lists: [{ id: 3 }]
+				lists: [3]
 			})
 		});
 
 		if (!res.ok) {
 			const body = await res.text();
-			console.error('[newsletter] Listmonk error:', res.status, body);
+			console.error('[newsletter] Listmonk create error:', res.status, body);
+		} else {
+			// Step 2: Add subscriber to list (Listmonk v6 ignores lists on create)
+			const { data } = await res.json() as { data: { id: number } };
+			const listRes = await fetch(`${listmonkUrl}/api/subscribers/lists`, {
+				method: 'PUT',
+				headers,
+				body: JSON.stringify({
+					ids: [data.id],
+					action: 'add',
+					target_list_ids: [3],
+					status: 'confirmed'
+				})
+			});
+			if (!listRes.ok) {
+				const body = await listRes.text();
+				console.error('[newsletter] Listmonk list-add error:', listRes.status, body);
+			}
 		}
 	} catch (err) {
 		console.error('[newsletter] Failed to reach Listmonk:', err);
