@@ -3,13 +3,19 @@
 	import { locationStore, requestLocation } from '$lib/stores/location';
 	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, BASE } from '$lib/api';
 	import { encryptMedia, decryptMedia, fileToUint8Array, bytesToObjectUrl } from '$lib/crypto/media';
-	import { loadIdentityFromStorage, downloadIdentityBackup } from '$lib/crypto/identity';
+	import { loadIdentityFromStorage, downloadIdentityBackup, clearIdentityFromStorage } from '$lib/crypto/identity';
+	import { clearIdentitySession, broadcastIdentityChange } from '$lib/stores/identity';
+	import { encryptProfileFields, decryptProfileFields } from '$lib/crypto/profile';
+	import { getMyProfileKey } from '$lib/stores/profileKeys';
+	import { decodeBase64 } from '$lib/crypto/util';
 	import { wsStatus } from '$lib/services/websocket';
 	import ImageCropper from '$lib/components/ImageCropper.svelte';
 
 	let displayName = $state('');
 	let bio = $state('');
 	let age = $state('');
+	let tags = $state<string[]>([]);
+	let tagInput = $state('');
 	let saving = $state(false);
 	let saved = $state(false);
 	let error = $state('');
@@ -34,6 +40,8 @@
 	let showIdentity = $state(false);
 	let showLocation = $state(false);
 	let showBlocked = $state(false);
+	let confirmReset = $state(false);
+	let resetting = $state(false);
 	let wantsUpdates = $state(false);
 	let updateEmail = $state('');
 	let subscribing = $state(false);
@@ -47,8 +55,24 @@
 			try {
 				const profile = await getProfile(did);
 				displayName = profile.displayName ?? '';
-				bio = profile.bio ?? '';
-				age = profile.age ? String(profile.age) : '';
+
+				// Decrypt encrypted fields if present
+				if (profile.encryptedFields && profile.encryptedFieldsNonce) {
+					try {
+						const myKey = await getMyProfileKey();
+						const fields = decryptProfileFields(profile.encryptedFields, profile.encryptedFieldsNonce, myKey.key);
+						bio = fields.bio ?? '';
+						age = fields.age ? String(fields.age) : '';
+						tags = fields.tags ?? [];
+					} catch {
+						// Fallback to plaintext fields
+						bio = profile.bio ?? '';
+						age = profile.age ? String(profile.age) : '';
+					}
+				} else {
+					bio = profile.bio ?? '';
+					age = profile.age ? String(profile.age) : '';
+				}
 
 					// Mark initial load complete after a tick so auto-save doesn't fire
 				setTimeout(() => { initialLoad = false; }, 100);
@@ -89,6 +113,7 @@
 		const _name = displayName;
 		const _bio = bio;
 		const _age = age;
+		const _tags = tags;
 
 		// Skip the initial load — only save on user edits
 		if (initialLoad) return;
@@ -102,15 +127,28 @@
 
 	async function autoSave() {
 		if (!myDid) return;
+		if (age && parseInt(age) < 18) {
+			error = 'you must be at least 18 to use this app';
+			return;
+		}
 		saving = true;
 		saved = false;
 		error = '';
 
 		try {
+			const myKey = await getMyProfileKey();
+			const { encryptedFields, nonce } = encryptProfileFields(
+				{ bio: bio.trim(), age: age ? parseInt(age) : null, tags },
+				myKey.key
+			);
+
 			await updateProfile(myDid, {
 				displayName: displayName.trim() || undefined,
 				bio: bio.trim(),
 				age: age ? parseInt(age) : undefined,
+				encryptedFields,
+				encryptedFieldsNonce: nonce,
+				profileKeyVersion: myKey.version,
 			});
 			saved = true;
 			setTimeout(() => saved = false, 2000);
@@ -118,6 +156,28 @@
 			error = e instanceof Error ? e.message : 'failed to save';
 		} finally {
 			saving = false;
+		}
+	}
+
+	function addTag() {
+		const t = tagInput.trim().toLowerCase();
+		if (t && !tags.includes(t)) {
+			tags = [...tags, t];
+		}
+		tagInput = '';
+	}
+
+	function removeTag(tag: string) {
+		tags = tags.filter(t => t !== tag);
+	}
+
+	function handleTagKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' || e.key === ',') {
+			e.preventDefault();
+			addTag();
+		}
+		if (e.key === 'Backspace' && !tagInput && tags.length > 0) {
+			tags = tags.slice(0, -1);
 		}
 	}
 
@@ -208,6 +268,31 @@
 			}
 		} catch {}
 	}
+
+	async function handleReset() {
+		if (!confirmReset) {
+			confirmReset = true;
+			return;
+		}
+		resetting = true;
+		try {
+			await clearIdentityFromStorage();
+			clearIdentitySession();
+			// Delete all IndexedDB databases for a clean slate
+			const dbs = await indexedDB.databases();
+			for (const db of dbs) {
+				if (db.name) indexedDB.deleteDatabase(db.name);
+			}
+			localStorage.clear();
+			sessionStorage.clear();
+			// Tell other tabs identity is gone — they'll reload and hit /setup too
+			broadcastIdentityChange();
+			window.location.href = '/setup';
+		} catch (e) {
+			console.error('Reset failed:', e);
+			resetting = false;
+		}
+	}
 </script>
 
 {#if showCropper && cropFile}
@@ -249,6 +334,26 @@
 					<span>bio</span>
 					<textarea bind:value={bio} rows="3" placeholder="tell people about yourself"></textarea>
 				</label>
+
+				<div class="tag-section">
+					<span class="tag-label">tags</span>
+					<div class="tag-container">
+						{#each tags as tag}
+							<span class="tag-chip">
+								{tag}
+								<button class="tag-remove" onclick={() => removeTag(tag)}>x</button>
+							</span>
+						{/each}
+						<input
+							type="text"
+							class="tag-input"
+							bind:value={tagInput}
+							onkeydown={handleTagKeydown}
+							placeholder={tags.length === 0 ? 'pronouns, interests, looking for...' : ''}
+						/>
+					</div>
+					<span class="text-caption">press enter or comma to add. anything goes.</span>
+				</div>
 
 				<div class="save-status">
 					{#if saving}
@@ -317,6 +422,14 @@
 					{:else}
 					<p class="muted">no identity loaded</p>
 				{/if}
+				<div class="reset-row">
+					<button class="danger" onclick={handleReset} disabled={resetting}>
+						{resetting ? 'resetting...' : confirmReset ? 'tap again to confirm' : 'delete identity & reset'}
+					</button>
+					{#if confirmReset && !resetting}
+						<span class="reset-note">this will delete your identity and all local data. you cannot undo this.</span>
+					{/if}
+				</div>
 			</div>
 		{/if}
 	</div>
@@ -527,6 +640,65 @@
 	.muted {
 		color: var(--text-muted);
 	}
+	/* Tags */
+	.tag-section {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.tag-label {
+		font-size: 14px;
+		color: var(--text-muted);
+	}
+	.tag-container {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		padding: 10px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		min-height: 44px;
+		align-items: center;
+	}
+	.tag-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 13px;
+		color: var(--text);
+		line-height: 1.3;
+	}
+	.tag-remove {
+		border: none;
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 11px;
+		padding: 0 2px;
+		cursor: pointer;
+		min-height: auto;
+		min-width: auto;
+		line-height: 1;
+	}
+	@media (hover: hover) {
+		.tag-remove:hover { color: var(--danger); }
+	}
+	.tag-input {
+		border: none;
+		outline: none;
+		background: transparent;
+		font-size: 14px;
+		color: var(--text);
+		flex: 1;
+		min-width: 100px;
+		padding: 0;
+	}
+	.tag-input::placeholder {
+		color: var(--text-muted);
+		opacity: 0.6;
+	}
 	.checkbox-row {
 		flex-direction: row;
 		align-items: center;
@@ -540,5 +712,26 @@
 	.checkbox-row span {
 		font-size: 14px;
 		color: var(--text-muted);
+	}
+	.reset-row {
+		margin-top: 16px;
+		padding-top: 16px;
+		border-top: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.danger {
+		background: #dc2626;
+		color: white;
+		border: none;
+	}
+	.danger:hover {
+		background: #b91c1c;
+	}
+	.reset-note {
+		font-size: 11px;
+		color: #dc2626;
+		line-height: 1.5;
 	}
 </style>

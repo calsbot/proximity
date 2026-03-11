@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { media, deliveryTokens } from '../db/schema';
+import { media, deliveryTokens, groupDeliveryTokens } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 
@@ -57,12 +57,13 @@ mediaRoutes.post('/upload-sealed', async (c) => {
 		return c.json({ error: 'file, deliveryToken, and mimeType required' }, 400);
 	}
 
-	// Validate delivery token
+	// Validate delivery token — check both DM and group token tables
 	const hasher = new Bun.CryptoHasher('sha256');
 	hasher.update(deliveryToken);
 	const tokenHash = hasher.digest('hex');
-	const token = await db.select().from(deliveryTokens).where(eq(deliveryTokens.tokenHash, tokenHash)).get();
-	if (!token) {
+	const dmToken = await db.select().from(deliveryTokens).where(eq(deliveryTokens.tokenHash, tokenHash)).get();
+	const groupToken = await db.select().from(groupDeliveryTokens).where(eq(groupDeliveryTokens.tokenHash, tokenHash)).get();
+	if (!dmToken && !groupToken) {
 		return c.json({ error: 'invalid delivery token' }, 403);
 	}
 

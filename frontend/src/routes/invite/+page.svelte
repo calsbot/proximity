@@ -167,8 +167,6 @@
 				{/if}
 			</div>
 		</div>
-
-		<p class="text-caption footer">invitation expires after one&nbsp;use.</p>
 	{/if}
 </div>
 
@@ -222,8 +220,5 @@
 	.checkbox-row span {
 		font-size: 14px;
 		color: var(--text-muted);
-	}
-	.footer {
-		margin-top: 16px;
 	}
 </style>

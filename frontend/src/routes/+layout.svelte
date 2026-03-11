@@ -8,9 +8,13 @@
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, initIdentitySync, broadcastIdentityChange, cacheIdentityInSession, restoreIdentityFromSession, requestIdentityFromTabs } from '$lib/stores/identity';
 	import { conversationsStore } from '$lib/stores/conversations';
-	import { register } from '$lib/api';
+	import { requestCountStore } from '$lib/stores/requestCount';
+	import { register, getFlagStatus, getDMInvitations, listPendingInvites, listMyAdminJoinRequests } from '$lib/api';
+	import { initChat } from '$lib/services/chat';
 
-	let totalUnread = $derived($conversationsStore.reduce((sum, c) => sum + c.unreadCount, 0));
+	let throttleLevel = $state<'none' | 'throttled' | 'hidden'>('none');
+
+	let totalUnread = $derived($conversationsStore.reduce((sum, c) => sum + c.unreadCount, 0) + $requestCountStore);
 
 	let { children } = $props();
 
@@ -80,6 +84,26 @@
 			identityStore.set({ identity: null, loading: false, error: 'failed to load identity' });
 		}
 		checked = true;
+
+		// Check if current user is flagged + count invitations
+		const id = $identityStore.identity;
+		if (id) {
+			// Initialize chat (WS + polling) early so notifications work on all pages
+			await initChat();
+
+			try {
+				const status = await getFlagStatus(id.did);
+				throttleLevel = status.level;
+			} catch {}
+			try {
+				const [dmInvs, groupInvs, adminJoinReqs] = await Promise.all([
+					getDMInvitations(id.did),
+					listPendingInvites(id.did),
+					listMyAdminJoinRequests(id.did),
+				]);
+				requestCountStore.set(dmInvs.length + groupInvs.length + adminJoinReqs.length);
+			} catch {}
+		}
 	});
 
 	/**
@@ -100,6 +124,15 @@
 </script>
 
 <div class="app" class:has-nav={showNav}>
+	{#if throttleLevel === 'throttled'}
+		<div class="throttle-banner">
+			your account is restricted. messages limited to 1/min. <a href="/settings">appeal</a>
+		</div>
+	{:else if throttleLevel === 'hidden'}
+		<div class="throttle-banner hidden-banner">
+			your profile is hidden from discovery. <a href="/settings">appeal</a>
+		</div>
+	{/if}
 	<main>
 		{#if !checked}
 			<div class="loading-screen">
@@ -206,6 +239,22 @@
 		padding: 2px 4px;
 		margin-left: 6px;
 		line-height: 1;
+	}
+
+	.throttle-banner {
+		font-size: 12px;
+		color: var(--text-muted);
+		padding: 8px 12px;
+		border: 1px solid var(--border);
+		margin-bottom: 8px;
+		line-height: 1.4;
+	}
+	.throttle-banner a {
+		color: var(--text);
+		text-decoration: underline;
+	}
+	.hidden-banner {
+		border-color: var(--text-muted);
 	}
 
 	.loading-screen {

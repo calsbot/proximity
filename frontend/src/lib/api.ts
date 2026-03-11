@@ -38,6 +38,9 @@ export function updateProfile(did: string, data: {
 	avatarNonce?: string;
 	instagram?: string;
 	profileLink?: string;
+	encryptedFields?: string;
+	encryptedFieldsNonce?: string;
+	profileKeyVersion?: number;
 }) {
 	return request<{ ok: boolean }>(`/profiles/${encodeURIComponent(did)}`, {
 		method: 'PUT',
@@ -59,6 +62,12 @@ export function discoverProfiles(cells: string[], requesterDid?: string) {
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		encryptedFields: string | null;
+		encryptedFieldsNonce: string | null;
+		profileKeyVersion: number | null;
+		wrappedProfileKey: string | null;
+		wrappedProfileKeyNonce: string | null;
+		wrappedProfileKeyVersion: number | null;
 		geohashCell: string;
 		lastSeen: string;
 	}>>(url);
@@ -93,9 +102,37 @@ export function getProfile(did: string) {
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		encryptedFields: string | null;
+		encryptedFieldsNonce: string | null;
+		profileKeyVersion: number | null;
 		geohashCells: string;
 		lastSeen: string;
 	}>(`/profiles/${encodeURIComponent(did)}`);
+}
+
+// --- Profile Keys ---
+
+export function storeProfileKeys(ownerDid: string, keys: Array<{ recipientDid: string; wrappedKey: string; wrappedKeyNonce: string; keyVersion: number }>) {
+	return request<{ ok: boolean }>('/profiles/keys', {
+		method: 'POST',
+		body: JSON.stringify({ ownerDid, keys })
+	});
+}
+
+export function getProfileKeysForMe(recipientDid: string) {
+	return request<Array<{
+		ownerDid: string;
+		wrappedKey: string;
+		wrappedKeyNonce: string;
+		keyVersion: number;
+	}>>(`/profiles/keys?recipientDid=${encodeURIComponent(recipientDid)}`);
+}
+
+export function revokeProfileKey(ownerDid: string, recipientDid: string) {
+	return request<{ ok: boolean }>('/profiles/keys', {
+		method: 'DELETE',
+		body: JSON.stringify({ ownerDid, recipientDid })
+	});
 }
 
 // --- Messages ---
@@ -186,6 +223,9 @@ export function listPendingInvites(did: string) {
 		groupId: string;
 		inviterDid: string;
 		groupName: string;
+		groupDescription: string;
+		memberCount: number;
+		inviterDisplayName: string;
 		createdAt: string;
 	}>>(`/groups/invites/pending?did=${encodeURIComponent(did)}`);
 }
@@ -213,10 +253,10 @@ export function kickMember(groupId: string, did: string, targetDid: string) {
 
 // --- Invite Links ---
 
-export function setInviteLinkHash(groupId: string, did: string, inviteKeyHash: string) {
+export function setInviteLinkHash(groupId: string, did: string, inviteKeyHash: string, opts?: { maxUses?: number | null; expiresInHours?: number | null }) {
 	return request<{ ok: boolean }>(`/groups/${groupId}/invite-link`, {
 		method: 'POST',
-		body: JSON.stringify({ did, inviteKeyHash })
+		body: JSON.stringify({ did, inviteKeyHash, maxUses: opts?.maxUses, expiresInHours: opts?.expiresInHours })
 	});
 }
 
@@ -250,6 +290,17 @@ export function respondToJoinRequest(groupId: string, requestId: string, did: st
 	});
 }
 
+export function listMyAdminJoinRequests(did: string) {
+	return request<Array<{
+		id: string;
+		groupId: string;
+		groupName: string;
+		requesterDid: string;
+		requesterName: string;
+		createdAt: string;
+	}>>(`/groups/my-admin-join-requests?did=${encodeURIComponent(did)}`);
+}
+
 export function revokeInviteLink(groupId: string, did: string) {
 	return request<{ ok: boolean }>(`/groups/${groupId}/invite-link`, {
 		method: 'DELETE',
@@ -281,6 +332,44 @@ export function reportUser(reporterDid: string, reportedDid: string, reason: str
 	return request<{ ok: boolean }>('/moderation/report', {
 		method: 'POST',
 		body: JSON.stringify({ reporterDid, reportedDid, reason, details })
+	});
+}
+
+export function submitFlag(data: {
+	flaggerDid: string;
+	flaggedDid: string;
+	category: string;
+	signedBlob: string;
+	signature: string;
+}) {
+	return request<{ ok: boolean }>('/moderation/flag', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function getFlagStatus(did: string) {
+	return request<{
+		level: 'none' | 'throttled' | 'hidden';
+		reason?: string;
+		effectiveAt?: string;
+		expiresAt?: string;
+		appealedAt?: string;
+		expired?: boolean;
+	}>(`/moderation/flag-status?did=${encodeURIComponent(did)}`);
+}
+
+export function submitAppeal(did: string) {
+	return request<{ ok: boolean }>('/moderation/appeal', {
+		method: 'POST',
+		body: JSON.stringify({ did })
+	});
+}
+
+export function checkCsam(mediaId: string, perceptualHash: string) {
+	return request<{ blocked: boolean }>('/moderation/check-csam', {
+		method: 'POST',
+		body: JSON.stringify({ mediaId, perceptualHash })
 	});
 }
 
@@ -410,6 +499,80 @@ export function sendSealedGroupMessage(data: {
 	return request<{ ok: boolean; ids: string[] }>('/messages/sealed-group', {
 		method: 'POST',
 		body: JSON.stringify(data)
+	});
+}
+
+// --- DM Invitations ---
+
+export function sendDMInvitation(data: {
+	senderDid: string;
+	recipientDid: string;
+	groupId: string;
+	senderDisplayName: string;
+	senderAvatarMediaId?: string;
+	senderAvatarKey?: string;
+	senderAvatarNonce?: string;
+	senderGeohashCell?: string;
+	firstMessageCiphertext: string;
+	firstMessageNonce: string;
+	firstMessageEpoch: number;
+	firstMessageDhPublicKey?: string;
+	firstMessagePreviousCounter?: number;
+}) {
+	return request<{ ok: boolean; id: string }>('/invitations/dm', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function getDMInvitations(did: string) {
+	return request<Array<{
+		id: string;
+		senderDid: string;
+		recipientDid: string;
+		groupId: string;
+		senderDisplayName: string;
+		senderAvatarMediaId: string | null;
+		senderAvatarKey: string | null;
+		senderAvatarNonce: string | null;
+		senderGeohashCell: string | null;
+		senderBoxPublicKey: string | null;
+		firstMessageCiphertext: string;
+		firstMessageNonce: string;
+		firstMessageEpoch: number;
+		firstMessageDhPublicKey: string | null;
+		firstMessagePreviousCounter: number | null;
+		createdAt: string;
+	}>>(`/invitations/dm?did=${encodeURIComponent(did)}`);
+}
+
+export function acceptDMInvitation(id: string) {
+	return request<{ ok: boolean; groupId: string }>(`/invitations/dm/${id}/accept`, {
+		method: 'POST'
+	});
+}
+
+export function blockDMInvitation(id: string) {
+	return request<{ ok: boolean }>(`/invitations/dm/${id}/block`, {
+		method: 'POST'
+	});
+}
+
+export function leaveDM(groupId: string, did: string) {
+	return request<{ ok: boolean }>('/invitations/dm-leave', {
+		method: 'POST',
+		body: JSON.stringify({ groupId, did })
+	});
+}
+
+export function getDMStatus(groupId: string) {
+	return request<Array<{ leaverDid: string; createdAt: string }>>(`/invitations/dm-status?groupId=${encodeURIComponent(groupId)}`);
+}
+
+export function clearDMLeave(groupId: string) {
+	return request<{ ok: boolean }>('/invitations/dm-leave', {
+		method: 'DELETE',
+		body: JSON.stringify({ groupId })
 	});
 }
 

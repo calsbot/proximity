@@ -14,7 +14,7 @@
 </script>
 
 <div class="landing">
-	<pre class="logo">proximity</pre>
+	<pre class="logo">meetmarket.io</pre>
 	<p>privacy-preserving discovery.</p>
 	<p>your location stays yours.</p>
 </div>

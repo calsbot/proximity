@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { encryptedMessages, groupMembers, groups, deliveryTokens, sealedMessages, groupDeliveryTokens } from '../db/schema';
-import { eq, and, gte, desc } from 'drizzle-orm';
+import { encryptedMessages, groupMembers, groups, deliveryTokens, sealedMessages, groupDeliveryTokens, flagThrottles, dmLeaves } from '../db/schema';
+import { eq, and, gte, desc, or } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 
 export const messageRoutes = new Hono();
@@ -29,6 +29,20 @@ messageRoutes.post('/', async (c) => {
 		previousCounter?: number; // Double Ratchet header
 	}>();
 
+	// Rate-limit throttled users (1 msg/min)
+	const throttle = await db.select().from(flagThrottles).where(eq(flagThrottles.did, body.senderDid)).get();
+	if (throttle && (throttle.level === 'throttled' || throttle.level === 'hidden')) {
+		const oneMinAgo = new Date(Date.now() - 60 * 1000);
+		const recentMsg = await db.select({ id: encryptedMessages.id })
+			.from(encryptedMessages)
+			.where(and(eq(encryptedMessages.senderDid, body.senderDid), gte(encryptedMessages.createdAt, oneMinAgo)))
+			.limit(1)
+			.all();
+		if (recentMsg.length > 0) {
+			return c.json({ error: 'Rate limited' }, 429);
+		}
+	}
+
 	// Reject messages from non-members of actual groups (skip for 1-to-1 DM conversations)
 	const group = await db.select().from(groups).where(eq(groups.id, body.groupId)).get();
 	if (group) {
@@ -38,6 +52,14 @@ messageRoutes.post('/', async (c) => {
 			.get();
 		if (!isMember) {
 			return c.json({ error: 'Not a group member' }, 403);
+		}
+	}
+
+	// Block messages in DM conversations where either party has left
+	if (!group) {
+		const leaveRecord = await db.select().from(dmLeaves).where(eq(dmLeaves.groupId, body.groupId)).limit(1).all();
+		if (leaveRecord.length > 0) {
+			return c.json({ error: 'Conversation ended — send a new request to reconnect' }, 403);
 		}
 	}
 
@@ -107,10 +129,17 @@ messageRoutes.post('/delivery-token', async (c) => {
 		return c.json({ error: 'did and tokenHash required' }, 400);
 	}
 
-	// Upsert — replace existing token for this DID
+	// Upsert — preserve old hash so conversation partners with stale tokens still work
 	const existing = await db.select().from(deliveryTokens).where(eq(deliveryTokens.did, did)).get();
 	if (existing) {
-		await db.update(deliveryTokens).set({ tokenHash }).where(eq(deliveryTokens.did, did));
+		if (existing.tokenHash !== tokenHash) {
+			// Token changed — save old hash as previous for graceful rotation
+			await db.update(deliveryTokens).set({
+				tokenHash,
+				previousTokenHash: existing.tokenHash,
+			}).where(eq(deliveryTokens.did, did));
+		}
+		// Same token — no update needed
 	} else {
 		await db.insert(deliveryTokens).values({ did, tokenHash });
 	}
@@ -136,9 +165,11 @@ messageRoutes.post('/sealed', async (c) => {
 		return c.json({ error: 'missing required fields' }, 400);
 	}
 
-	// Hash the provided token and check it matches a registered one
+	// Hash the provided token and check it matches a registered one (current or previous)
 	const tokenHash = sha256Hex(body.deliveryToken);
-	const token = await db.select().from(deliveryTokens).where(eq(deliveryTokens.tokenHash, tokenHash)).get();
+	const token = await db.select().from(deliveryTokens).where(
+		or(eq(deliveryTokens.tokenHash, tokenHash), eq(deliveryTokens.previousTokenHash, tokenHash))
+	).get();
 	if (!token) {
 		return c.json({ error: 'invalid delivery token' }, 403);
 	}

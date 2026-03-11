@@ -5,10 +5,15 @@
 	import { locationStore, hasLocation, requestLocation } from '$lib/stores/location';
 	import { identityStore } from '$lib/stores/identity';
 	import { distanceMeters, center, neighbors, encode, generateDecoyCells } from '$lib/geo/geohash';
-	import { discoverProfiles, updateProfile, listGroups, BASE } from '$lib/api';
+	import { discoverProfiles, updateProfile, listGroups, storeProfileKeys, getDMInvitations, listPendingInvites, BASE } from '$lib/api';
 	import { getConversationId, initChat } from '$lib/services/chat';
 	import { conversationsStore } from '$lib/stores/conversations';
+	import { requestCountStore } from '$lib/stores/requestCount';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
+	import { getCachedProfileKey, cacheProfileKey, getMyProfileKey } from '$lib/stores/profileKeys';
+	import { decryptProfileFields, wrapProfileKey } from '$lib/crypto/profile';
+	import { decodeBase64 } from '$lib/crypto/util';
+	import { unwrapKey } from '$lib/crypto/media';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
 
 	let viewMode = $state<'grid' | 'map'>('grid');
@@ -24,6 +29,7 @@
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		tags: string[];
 		geohashCell: string;
 		lastSeen: string;
 		distance?: number;
@@ -42,6 +48,9 @@
 	let locationError = $state(false);
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 	let activeFilter = $state<string>('all');
+
+	// Pending request sender DIDs (for grid badge)
+	let requestSenderDids = $state<Set<string>>(new Set());
 
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
@@ -81,6 +90,9 @@
 
 		// Fire-and-forget chat init
 		initChat().catch(() => {});
+
+		// Fetch pending requests for grid badges
+		fetchRequests(did);
 
 		// Check if location is already available (e.g. from a previous visit)
 		const loc = get(locationStore);
@@ -174,6 +186,7 @@
 					const d = get(identityStore).identity?.did;
 					if (d) {
 						fetchGroups(d);
+						fetchRequests(d);
 						let cells = currentLoc.queryCells;
 						if (currentLoc.lat && currentLoc.lon) {
 							cells = buildExpandingCells(currentLoc.lat, currentLoc.lon);
@@ -192,6 +205,20 @@
 		}
 	});
 
+	async function fetchRequests(did: string) {
+		try {
+			const [dmInvs, groupInvs] = await Promise.all([
+				getDMInvitations(did),
+				listPendingInvites(did),
+			]);
+			const senders = new Set<string>();
+			for (const inv of dmInvs) senders.add(inv.senderDid);
+			for (const inv of groupInvs) senders.add(inv.inviterDid);
+			requestSenderDids = senders;
+			requestCountStore.set(dmInvs.length + groupInvs.length);
+		} catch {}
+	}
+
 	async function fetchGroups(did: string) {
 		try {
 			const groups = await listGroups(did);
@@ -209,37 +236,100 @@
 		try {
 			const data = await discoverProfiles(cells, myDid ?? undefined);
 			const loc = get(locationStore);
+			const identity = get(identityStore).identity;
+			const myBoxSecretKey = identity?.boxSecretKey ?? null;
+
+			// Decrypt encrypted profile fields where we have keys
+			const decryptedData = await Promise.all(data.filter(p => p.did !== myDid).map(async (p) => {
+				let decryptedBio = p.bio;
+				let decryptedAge = p.age;
+				let decryptedTags: string[] = [];
+
+				if (p.encryptedFields && p.encryptedFieldsNonce && myBoxSecretKey) {
+					try {
+						// Try to unwrap the profile key
+						let profileKey: string | null = null;
+
+						// Check if server included a wrapped key for us
+						if (p.wrappedProfileKey && p.wrappedProfileKeyNonce && p.boxPublicKey) {
+							try {
+								profileKey = unwrapKey(
+									p.wrappedProfileKey,
+									p.wrappedProfileKeyNonce,
+									decodeBase64(p.boxPublicKey),
+									myBoxSecretKey
+								);
+								await cacheProfileKey(p.did, profileKey, p.wrappedProfileKeyVersion ?? 0);
+							} catch {}
+						}
+
+						// Fallback to cached key
+						if (!profileKey) {
+							const cached = await getCachedProfileKey(p.did);
+							if (cached) profileKey = cached.key;
+						}
+
+						// Decrypt if we have a key
+						if (profileKey) {
+							const fields = decryptProfileFields(p.encryptedFields!, p.encryptedFieldsNonce!, profileKey);
+							decryptedBio = fields.bio ?? '';
+							decryptedAge = fields.age;
+							decryptedTags = fields.tags ?? [];
+						}
+					} catch {}
+				}
+
+				return { ...p, bio: decryptedBio, age: decryptedAge, tags: decryptedTags };
+			}));
 
 			let enriched: NearbyProfile[];
 
 			if (loc.lat && loc.lon) {
-				enriched = data
-					.filter((p) => p.did !== myDid)
-					.map((p) => {
-						const c = center(p.geohashCell);
-						const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
-						const sharedGroups = myGroups
-							.filter(g => g.memberDids.has(p.did))
-							.map(g => ({ id: g.id, name: g.name }));
-						return { ...p, distance: dist, sharedGroups };
-					});
+				enriched = decryptedData.map((p) => {
+					const c = center(p.geohashCell);
+					const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
+					const sharedGroups = myGroups
+						.filter(g => g.memberDids.has(p.did))
+						.map(g => ({ id: g.id, name: g.name }));
+					return { ...p, distance: dist, sharedGroups };
+				});
 			} else {
-				enriched = data
-					.filter((p) => p.did !== myDid)
-					.map((p) => {
-						const sharedGroups = myGroups
-							.filter(g => g.memberDids.has(p.did))
-							.map(g => ({ id: g.id, name: g.name }));
-						return { ...p, sharedGroups };
-					});
+				enriched = decryptedData.map((p) => {
+					const sharedGroups = myGroups
+						.filter(g => g.memberDids.has(p.did))
+						.map(g => ({ id: g.id, name: g.name }));
+					return { ...p, sharedGroups };
+				});
 			}
 
 			allProfiles = enriched;
+
+			// Distribute own profile key to discovered users (background)
+			distributeProfileKey(decryptedData.filter(p => p.boxPublicKey).map(p => ({ did: p.did, boxPublicKey: p.boxPublicKey! })));
 		} catch {
 			allProfiles = [];
 		} finally {
 			loading = false;
 		}
+	}
+
+	/** Wrap and distribute own profile key to nearby users (fire-and-forget). */
+	async function distributeProfileKey(recipients: Array<{ did: string; boxPublicKey: string }>) {
+		try {
+			const identity = get(identityStore).identity;
+			if (!identity?.boxSecretKey || !identity?.did) return;
+			const myBoxSecretKey = identity.boxSecretKey;
+			const myKey = await getMyProfileKey();
+
+			const keys = recipients.map(r => {
+				const { wrappedKey, nonce } = wrapProfileKey(myKey.key, myBoxSecretKey, decodeBase64(r.boxPublicKey));
+				return { recipientDid: r.did, wrappedKey, wrappedKeyNonce: nonce, keyVersion: myKey.version };
+			});
+
+			if (keys.length > 0) {
+				await storeProfileKeys(identity.did, keys);
+			}
+		} catch {}
 	}
 
 	async function openChat(profile: NearbyProfile) {
@@ -264,6 +354,10 @@
 	function unreadFrom(did: string): number {
 		const convo = $conversationsStore.find(c => c.peerDid === did);
 		return convo?.unreadCount ?? 0;
+	}
+
+	function hasRequest(did: string): boolean {
+		return requestSenderDids.has(did);
 	}
 
 	function formatDistance(meters?: number): string {
@@ -416,6 +510,7 @@
 			<div class="photo-grid">
 				{#each profiles as profile}
 					{@const unread = unreadFrom(profile.did)}
+					{@const hasReq = hasRequest(profile.did)}
 					{@const presence = getPresence(profile.lastSeen)}
 					{@const url = avatarUrl(profile)}
 					{@const isGroupMember = profile.sharedGroups.length > 0}
@@ -435,25 +530,34 @@
 						<!-- Presence dot -->
 						<span class="tile-presence {presence}"></span>
 
-						<!-- Unread badge -->
+						<!-- Unread / request badge -->
 						{#if unread > 0}
 							<span class="tile-badge">{unread}</span>
+						{:else if hasReq}
+							<span class="tile-badge request-badge">!</span>
 						{/if}
 
 						<!-- Group badges -->
 						{#if isGroupMember}
-							<div class="group-badges">
+							<div class="group-badges" class:below-badge={unread > 0 || hasReq}>
 								{#each profile.sharedGroups as group}
 									<span class="group-badge">{group.name}</span>
 								{/each}
 							</div>
 						{/if}
 
-						<!-- Bottom overlay with name + distance -->
+						<!-- Bottom overlay with name + distance + tags -->
 						<div class="tile-overlay">
 							<span class="tile-name">
 								{profile.displayName}{#if profile.age}, {profile.age}{/if}
 							</span>
+							{#if profile.tags?.length > 0}
+								<div class="tile-tags">
+									{#each profile.tags.slice(0, 3) as tag}
+										<span class="tile-tag">{tag}</span>
+									{/each}
+								</div>
+							{/if}
 							{#if profile.distance}
 								<span class="tile-dist">{formatDistance(profile.distance)}</span>
 							{/if}
@@ -656,14 +760,20 @@
 		text-align: center;
 		padding: 0 5px;
 	}
+	.request-badge {
+		background: var(--text-muted);
+	}
 	.group-badges {
 		position: absolute;
 		top: 6px;
-		right: 6px;
+		right: 4px;
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 		align-items: flex-end;
+	}
+	.group-badges.below-badge {
+		top: 26px;
 	}
 	.group-badge {
 		background: rgba(0, 0, 0, 0.7);
@@ -696,6 +806,21 @@
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+	}
+	.tile-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 3px;
+		margin-top: 1px;
+	}
+	.tile-tag {
+		font-size: 10px;
+		color: rgba(255, 255, 255, 0.7);
+		border: 1px solid rgba(255, 255, 255, 0.25);
+		padding: 1px 5px;
+		border-radius: 1px;
+		line-height: 1.3;
 		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 	}
 	.tile-dist {
