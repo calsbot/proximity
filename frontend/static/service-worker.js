@@ -38,6 +38,8 @@ self.addEventListener('fetch', (event) => {
 	// Skip non-GET and API requests
 	if (request.method !== 'GET') return;
 	const url = new URL(request.url);
+	// Skip non-http(s) schemes (chrome-extension://, etc.)
+	if (!url.protocol.startsWith('http')) return;
 	const apiPaths = ['/auth', '/profiles', '/messages', '/groups', '/moderation', '/invitations', '/media', '/push', '/ws', '/newsletter'];
 	if (apiPaths.some((p) => url.pathname.startsWith(p))) return;
 

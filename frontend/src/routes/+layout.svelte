@@ -11,9 +11,26 @@
 	import { requestCountStore } from '$lib/stores/requestCount';
 	import { register, getFlagStatus, getDMInvitations, listPendingInvites, listMyAdminJoinRequests } from '$lib/api';
 	import { initChat } from '$lib/services/chat';
-	import { initNotifications, subscribeToPush, pushSupported, pushSubscribed, notificationPermission } from '$lib/services/notifications';
+	import { initNotifications } from '$lib/services/notifications';
+	import { wsStatus } from '$lib/services/websocket';
 
 	let throttleLevel = $state<'none' | 'throttled' | 'hidden'>('none');
+	let showOffline = $state(false);
+	let offlineTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// Show "offline" banner only after 5s of sustained disconnection (avoids flashing during reconnects).
+	// Only show when the user has an identity — before login, WS is intentionally not connected.
+	$effect(() => {
+		const hasIdentity = !!$identityStore.identity;
+		if (hasIdentity && $wsStatus === 'disconnected') {
+			if (!offlineTimer) {
+				offlineTimer = setTimeout(() => { showOffline = true; }, 5000);
+			}
+		} else {
+			if (offlineTimer) { clearTimeout(offlineTimer); offlineTimer = null; }
+			showOffline = false;
+		}
+	});
 
 	let totalUnread = $derived($conversationsStore.reduce((sum, c) => sum + c.unreadCount, 0) + $requestCountStore);
 
@@ -92,12 +109,8 @@
 			// Initialize chat (WS + polling) early so notifications work on all pages
 			await initChat();
 
-			// Register service worker + prompt for push notifications
+			// Register service worker (no auto-prompt — user enables in settings)
 			await initNotifications();
-			if ($pushSupported && !$pushSubscribed && $notificationPermission !== 'denied') {
-				// Auto-subscribe — user can disable in settings later
-				subscribeToPush(id.did).catch(() => {});
-			}
 
 			try {
 				const status = await getFlagStatus(id.did);
@@ -132,6 +145,9 @@
 </script>
 
 <div class="app" class:has-nav={showNav}>
+	{#if showOffline}
+		<div class="offline-banner">connecting to server...</div>
+	{/if}
 	{#if throttleLevel === 'throttled'}
 		<div class="throttle-banner">
 			your account is restricted. messages limited to 1/min. <a href="/settings">appeal</a>
@@ -249,6 +265,14 @@
 		line-height: 1;
 	}
 
+	.offline-banner {
+		font-size: 12px;
+		color: var(--text-muted);
+		padding: 6px 12px;
+		border: 1px solid var(--border);
+		margin-bottom: 8px;
+		text-align: center;
+	}
 	.throttle-banner {
 		font-size: 12px;
 		color: var(--text-muted);

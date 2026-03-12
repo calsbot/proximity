@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { encryptedMessages, groupMembers, groups, deliveryTokens, sealedMessages, groupDeliveryTokens, flagThrottles, dmLeaves } from '../db/schema';
+import { encryptedMessages, groupMembers, groups, deliveryTokens, sealedMessages, groupDeliveryTokens, flagThrottles, dmLeaves, dmInvitations, profiles } from '../db/schema';
 import { eq, and, gte, desc, or } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
+import { wsClients } from '../index';
+import { sendPushNotification } from './push';
 
 export const messageRoutes = new Hono();
 
@@ -64,6 +66,7 @@ messageRoutes.post('/', async (c) => {
 	}
 
 	const id = nanoid();
+	const createdAt = new Date();
 	await db.insert(encryptedMessages).values({
 		id,
 		groupId: body.groupId,
@@ -75,6 +78,37 @@ messageRoutes.post('/', async (c) => {
 		dhPublicKey: body.dhPublicKey ?? null,
 		previousCounter: body.previousCounter ?? null,
 	});
+
+	// For DMs: relay via WebSocket for real-time delivery (includes DB id for proper dedup).
+	// Groups have their own WS relay (group_message / sealed_group_message) so skip here.
+	if (!group) {
+		const recipientWs = wsClients.get(body.recipientDid);
+		if (recipientWs) {
+			recipientWs.send(JSON.stringify({
+				type: 'message',
+				id,
+				groupId: body.groupId,
+				senderDid: body.senderDid,
+				recipientDid: body.recipientDid,
+				epoch: body.epoch,
+				ciphertext: body.ciphertext,
+				nonce: body.nonce,
+				dhPublicKey: body.dhPublicKey ?? null,
+				previousCounter: body.previousCounter ?? null,
+				createdAt: createdAt.toISOString(),
+			}));
+		} else {
+			// Recipient offline — send push notification
+			const senderProfile = await db.select({ displayName: profiles.displayName })
+				.from(profiles).where(eq(profiles.did, body.senderDid)).get();
+			sendPushNotification(body.recipientDid, {
+				title: senderProfile?.displayName ?? 'New message',
+				body: 'You have a new message',
+				tag: `msg-${body.groupId || 'dm'}`,
+				data: { url: body.groupId ? `/chat/${body.groupId}` : '/chat' },
+			}).catch(() => {});
+		}
+	}
 
 	return c.json({ ok: true, id });
 });
@@ -94,7 +128,15 @@ messageRoutes.get('/', async (c) => {
 
 	const since = sinceParam ? new Date(sinceParam) : new Date(0);
 
-	const messages = await db.select()
+	// Find groupIds with pending DM invitations — these shouldn't appear in messages
+	// until the invitation is accepted
+	const pendingInvites = await db.select({ groupId: dmInvitations.groupId })
+		.from(dmInvitations)
+		.where(and(eq(dmInvitations.recipientDid, did), eq(dmInvitations.status, 'pending')))
+		.all();
+	const pendingGroupIds = new Set(pendingInvites.map(i => i.groupId));
+
+	const allMessages = await db.select()
 		.from(encryptedMessages)
 		.where(
 			and(
@@ -103,6 +145,11 @@ messageRoutes.get('/', async (c) => {
 			)
 		)
 		.all();
+
+	// Filter out messages for groups with pending DM invitations
+	const messages = pendingGroupIds.size > 0
+		? allMessages.filter(m => !pendingGroupIds.has(m.groupId))
+		: allMessages;
 
 	const sealed = await db.select()
 		.from(sealedMessages)
@@ -189,11 +236,13 @@ messageRoutes.post('/sealed', async (c) => {
 
 /**
  * POST /messages/group-delivery-token
- * Register (or update) a delivery token hash for a group.
- * Called by the group creator/admin.
+ * Register a delivery token hash for a group.
+ * By default INSERT-OR-IGNORE: first registration wins (prevents race conditions
+ * where multiple members independently generate different tokens).
+ * Pass force:true to overwrite (used during key rotation after member kick/leave).
  */
 messageRoutes.post('/group-delivery-token', async (c) => {
-	const { groupId, tokenHash } = await c.req.json<{ groupId: string; tokenHash: string }>();
+	const { groupId, tokenHash, force } = await c.req.json<{ groupId: string; tokenHash: string; force?: boolean }>();
 
 	if (!groupId || !tokenHash) {
 		return c.json({ error: 'groupId and tokenHash required' }, 400);
@@ -201,12 +250,17 @@ messageRoutes.post('/group-delivery-token', async (c) => {
 
 	const existing = await db.select().from(groupDeliveryTokens).where(eq(groupDeliveryTokens.groupId, groupId)).get();
 	if (existing) {
-		await db.update(groupDeliveryTokens).set({ tokenHash }).where(eq(groupDeliveryTokens.groupId, groupId));
+		if (force) {
+			// Rotation: explicitly overwrite the token
+			await db.update(groupDeliveryTokens).set({ tokenHash }).where(eq(groupDeliveryTokens.groupId, groupId));
+			return c.json({ ok: true });
+		}
+		// Token already registered — don't overwrite (first-writer-wins)
+		return c.json({ ok: true, exists: true });
 	} else {
 		await db.insert(groupDeliveryTokens).values({ groupId, tokenHash });
+		return c.json({ ok: true });
 	}
-
-	return c.json({ ok: true });
 });
 
 /**

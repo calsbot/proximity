@@ -4,7 +4,7 @@
 	import { identityStore } from '$lib/stores/identity';
 	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, markConversationPeerLeft, unmarkConversationPeerLeft, diffGroupMembers, addMessage, muteConversation, unmuteConversation, resetSealedSender } from '$lib/stores/conversations';
 	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapSenderKeys, distributeMySenderKey, rotateGroupKey, handleMediaViewed, startConversation } from '$lib/services/chat';
-	import { getGroup, getProfile, leaveGroup, kickMember, inviteToGroup, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest, acceptDMInvitation, submitFlag, revokeProfileKey, leaveDM, getDMStatus, sendDMInvitation } from '$lib/api';
+	import { getGroup, getProfile, leaveGroup, kickMember, transferAdmin, inviteToGroup, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest, acceptDMInvitation, declineDMInvitation, getDMInvitations, submitFlag, revokeProfileKey, leaveDM, getDMStatus, sendDMInvitation } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { randomHex, sha256Hex } from '$lib/crypto/util';
 	import { createSignedFlag, type FlagPayload } from '$lib/crypto/moderation';
@@ -131,6 +131,12 @@
 		})() : null
 	);
 
+	// Pending incoming DM invitation — show accept/decline instead of composer
+	let pendingIncomingInvite = $state<{id: string; senderDid: string; senderDisplayName: string; senderBoxPublicKey: string | null} | null>(null);
+
+	// Outgoing invitation sent — block further messages until accepted
+	let outgoingInviteSent = $state(false);
+
 	$effect(() => {
 		const did = myDid;
 		if (!did || loaded) return;
@@ -176,16 +182,24 @@
 						// Track member changes
 						diffGroupMembers(groupId, group.members);
 
-						// Sender Keys: fetch existing members' keys, then distribute my own
-						await bootstrapSenderKeys(groupId);
-						await distributeMySenderKey(groupId);
+						// Check if we're still a member — server is source of truth
+						const isMember = group.members.some(m => m.did === did);
+						if (!isMember && !c.left) {
+							markConversationLeft(groupId);
+						}
 
-						// Fetch join requests if admin
-						const me = group.members.find(m => m.did === did);
-						if (me?.role === 'admin') {
-							try {
-								joinRequests = await listJoinRequests(groupId, did);
-							} catch {}
+						// Only bootstrap/distribute keys if we're still a member
+						if (isMember) {
+							await bootstrapSenderKeys(groupId);
+							await distributeMySenderKey(groupId);
+
+							// Fetch join requests if admin
+							const me = group.members.find(m => m.did === did);
+							if (me?.role === 'admin') {
+								try {
+									joinRequests = await listJoinRequests(groupId, did);
+								} catch {}
+							}
 						}
 					} catch {}
 				}
@@ -253,7 +267,11 @@
 	$effect(() => {
 		const did = myDid;
 		const c = convo;
-		if (!did || isGroupChat || !c) return;
+		// Guard: skip for group chats. Check both the persisted convo.isGroup flag
+		// (available immediately from IndexedDB) and the page-level isGroupChat state
+		// (set asynchronously after getGroup resolves). Without the convo.isGroup check,
+		// this effect races ahead of the async group load and clears the left flag.
+		if (!did || isGroupChat || c?.isGroup || !c) return;
 		(async () => {
 			try {
 				const leaves = await getDMStatus(groupId);
@@ -280,6 +298,33 @@
 		})();
 	});
 
+	// Check if there's a pending incoming or outgoing DM invitation for this chat
+	$effect(() => {
+		const did = myDid;
+		const c = convo;
+		if (!did || isGroupChat || c?.isGroup) return;
+		(async () => {
+			try {
+				const invitations = await getDMInvitations(did);
+				const incoming = invitations.find(inv => inv.groupId === groupId && inv.senderDid !== did);
+				if (incoming) {
+					pendingIncomingInvite = {
+						id: incoming.id,
+						senderDid: incoming.senderDid,
+						senderDisplayName: incoming.senderDisplayName,
+						senderBoxPublicKey: incoming.senderBoxPublicKey
+					};
+					return;
+				}
+				// Check for outgoing invitation (I sent a request, waiting for them to accept)
+				const outgoing = invitations.find(inv => inv.groupId === groupId && inv.senderDid === did);
+				if (outgoing) {
+					outgoingInviteSent = true;
+				}
+			} catch {}
+		})();
+	});
+
 	// Auto-scroll on new messages or pending message
 	$effect(() => {
 		const _msgs = messages.length;
@@ -299,6 +344,16 @@
 	});
 
 	// Listen for real-time group events from WebSocket
+	function handleMemberJoinedEvent(e: Event) {
+		const { groupId: gid } = (e as CustomEvent).detail;
+		if (gid === groupId) {
+			// Refresh full member list from server so we get displayName, role, boxPublicKey etc.
+			getGroup(groupId).then(g => {
+				groupMembers = g.members;
+				diffGroupMembers(groupId, g.members);
+			}).catch(() => {});
+		}
+	}
 	function handleMemberRemoved(e: Event) {
 		const { groupId: gid, targetDid } = (e as CustomEvent).detail;
 		if (gid === groupId) {
@@ -321,7 +376,13 @@
 		if (gid === groupId) {
 			unmarkConversationLeft(groupId);
 			requestSent = false;
-			getGroup(groupId).then(g => { groupMembers = g.members; }).catch(() => {});
+			// Refresh members + bootstrap sender keys so we can send/receive immediately
+			getGroup(groupId).then(async (g) => {
+				groupMembers = g.members;
+				diffGroupMembers(groupId, g.members);
+				await bootstrapSenderKeys(groupId);
+				await distributeMySenderKey(groupId);
+			}).catch(() => {});
 		}
 	}
 	function handleJoinDenied(e: Event) {
@@ -344,23 +405,45 @@
 			// peerLeft is now $derived from convo.peerLeft — store updates happen in chat.ts
 			unmarkConversationLeft(groupId);
 			chatRequestSent = false;
+			outgoingInviteSent = false;
 		}
 	}
+	async function handleDmInvitation(e: Event) {
+		const { groupId: gid, senderDisplayName } = (e as CustomEvent).detail;
+		if (gid !== groupId || !myDid || isGroupChat) return;
+		// Re-fetch invitations to get the full invite details
+		try {
+			const invitations = await getDMInvitations(myDid);
+			const incoming = invitations.find((inv: any) => inv.groupId === groupId && inv.senderDid !== myDid);
+			if (incoming) {
+				pendingIncomingInvite = {
+					id: incoming.id,
+					senderDid: incoming.senderDid,
+					senderDisplayName: incoming.senderDisplayName,
+					senderBoxPublicKey: incoming.senderBoxPublicKey
+				};
+			}
+		} catch {}
+	}
 	onMount(() => {
+		window.addEventListener('group-member-joined', handleMemberJoinedEvent);
 		window.addEventListener('group-member-removed', handleMemberRemoved);
 		window.addEventListener('group-join-request', handleJoinRequest);
 		window.addEventListener('group-join-approved', handleJoinApproved);
 		window.addEventListener('group-join-denied', handleJoinDenied);
 		window.addEventListener('dm-peer-left', handleDmPeerLeft);
 		window.addEventListener('dm-accepted', handleDmAccepted);
+		window.addEventListener('dm-invitation', handleDmInvitation);
 	});
 	onDestroy(() => {
+		window.removeEventListener('group-member-joined', handleMemberJoinedEvent);
 		window.removeEventListener('group-member-removed', handleMemberRemoved);
 		window.removeEventListener('group-join-request', handleJoinRequest);
 		window.removeEventListener('group-join-approved', handleJoinApproved);
 		window.removeEventListener('group-join-denied', handleJoinDenied);
 		window.removeEventListener('dm-peer-left', handleDmPeerLeft);
 		window.removeEventListener('dm-accepted', handleDmAccepted);
+		window.removeEventListener('dm-invitation', handleDmInvitation);
 	});
 
 	async function ensureConversation(): Promise<void> {
@@ -371,6 +454,7 @@
 	}
 
 	async function handleSend() {
+		if (pendingIncomingInvite || outgoingInviteSent) return;
 		if (stagedFile) {
 			await sendStagedMedia();
 			return;
@@ -379,12 +463,14 @@
 		const text = input.trim();
 		input = '';
 		sending = true;
+		const wasFirstContact = !isGroupChat && (messages.length === 0);
 		try {
 			await ensureConversation();
 			if (isGroupChat) {
 				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
 			} else {
 				await sendChatMessage(groupId, text);
+				if (wasFirstContact) outgoingInviteSent = true;
 			}
 			// Accept DM invitation on first reply
 			if (pendingInvitationId) {
@@ -436,14 +522,59 @@
 	let myRole = $derived(groupMembers.find(m => m.did === myDid)?.role);
 	let isAdmin = $derived(myRole === 'admin');
 
+	let pickingNewAdmin = $state(false);
+	let leaveError = $state('');
+
 	async function handleLeave() {
 		if (!myDid) return;
+		leaveError = '';
 		try {
 			await leaveGroup(groupId, myDid);
-			markConversationLeft(groupId);
-			activeTab = 'chat';
 		} catch (e) {
-			console.error('Failed to leave group:', e);
+			const msg = e instanceof Error ? e.message : '';
+			if (msg.includes('Transfer admin')) {
+				pickingNewAdmin = true;
+				activeTab = 'members';
+			} else {
+				leaveError = msg || 'failed to leave group';
+			}
+			return;
+		}
+		markConversationLeft(groupId);
+		pickingNewAdmin = false;
+		await goto('/chat');
+	}
+
+	async function handleTransferAndLeave(targetDid: string) {
+		if (!myDid) return;
+		leaveError = '';
+		try {
+			await transferAdmin(groupId, myDid, targetDid);
+		} catch (e) {
+			leaveError = e instanceof Error ? e.message : 'failed to transfer admin';
+			return;
+		}
+		try {
+			await leaveGroup(groupId, myDid);
+		} catch (e) {
+			leaveError = e instanceof Error ? e.message : 'failed to leave group';
+			return;
+		}
+		markConversationLeft(groupId);
+		pickingNewAdmin = false;
+		await goto('/chat');
+	}
+
+	async function handleTransferAdmin(targetDid: string) {
+		if (!myDid) return;
+		try {
+			await transferAdmin(groupId, myDid, targetDid);
+			const group = await getGroup(groupId);
+			groupMembers = group.members;
+			diffGroupMembers(groupId, group.members);
+			pickingNewAdmin = false;
+		} catch (e) {
+			console.error('Failed to transfer admin:', e);
 		}
 	}
 
@@ -497,6 +628,36 @@
 		} finally {
 			requestingChat = false;
 		}
+	}
+
+	async function handleAcceptIncoming() {
+		if (!pendingIncomingInvite) return;
+		try {
+			await acceptDMInvitation(pendingIncomingInvite.id);
+			if (pendingIncomingInvite.senderBoxPublicKey) {
+				await startConversation(pendingIncomingInvite.senderDid, pendingIncomingInvite.senderDisplayName, pendingIncomingInvite.senderBoxPublicKey);
+			}
+			unmarkConversationLeft(groupId);
+			resetSealedSender(groupId);
+			pendingIncomingInvite = null;
+			pendingPeer = null;
+			const { forcePoll } = await import('$lib/services/chat');
+			forcePoll();
+		} catch (e) {
+			console.error('[chat] Failed to accept incoming invite:', e);
+		}
+	}
+
+	async function handleIgnoreIncoming() {
+		if (!pendingIncomingInvite || !myDid) return;
+		try {
+			await declineDMInvitation(pendingIncomingInvite.id);
+			await leaveDM(groupId, myDid);
+		} catch (e) {
+			console.error('[chat] Failed to ignore incoming request:', e);
+		}
+		pendingIncomingInvite = null;
+		goto('/chat');
 	}
 
 	async function handleJoinResponse(requestId: string, action: 'approve' | 'deny') {
@@ -579,7 +740,7 @@
 		if (!myDid) return;
 		try {
 			const key = randomHex(16);
-			const hash = await sha256Hex(key);
+			// Build URL synchronously — clipboard/share APIs need the user gesture to still be active
 			const url = `${window.location.origin}/invite#groupId=${encodeURIComponent(groupId)}&key=${encodeURIComponent(key)}`;
 
 			if (typeof navigator.share !== 'undefined') {
@@ -591,16 +752,16 @@
 						url
 					});
 					// Store hash on server after share (don't block on it)
-					setInviteLinkHash(groupId, myDid, hash, getLinkOpts()).catch(e => console.error('Failed to store invite hash:', e));
+					sha256Hex(key).then(hash => setInviteLinkHash(groupId, myDid!, hash, getLinkOpts())).catch(e => console.error('Failed to store invite hash:', e));
 					return;
 				} catch {}
 			}
-			// Copy to clipboard first while user gesture is still active
+			// Copy to clipboard while user gesture is still active (before any await)
 			await copyToClipboard(url);
 			inviteLinkCopied = true;
 			setTimeout(() => { inviteLinkCopied = false; }, 2000);
-			// Then store hash on server
-			setInviteLinkHash(groupId, myDid, hash, getLinkOpts()).catch(e => console.error('Failed to store invite hash:', e));
+			// Then compute hash and store on server (async, non-blocking)
+			sha256Hex(key).then(hash => setInviteLinkHash(groupId, myDid!, hash, getLinkOpts())).catch(e => console.error('Failed to store invite hash:', e));
 		} catch (e) {
 			console.error('Failed to create invite link:', e);
 		}
@@ -610,14 +771,13 @@
 		if (!myDid) return;
 		try {
 			const key = randomHex(16);
-			const hash = await sha256Hex(key);
+			// Build URL and copy to clipboard synchronously — user gesture expires after first await
 			const url = `${window.location.origin}/invite#groupId=${encodeURIComponent(groupId)}&key=${encodeURIComponent(key)}`;
-			// Copy to clipboard first while user gesture is still active
 			await copyToClipboard(url);
 			inviteLinkCopied = true;
 			setTimeout(() => { inviteLinkCopied = false; }, 2000);
-			// Then store hash on server (don't block clipboard on this)
-			setInviteLinkHash(groupId, myDid, hash, getLinkOpts()).catch(e => console.error('Failed to store invite hash:', e));
+			// Then compute hash and store on server (async, non-blocking)
+			sha256Hex(key).then(hash => setInviteLinkHash(groupId, myDid!, hash, getLinkOpts())).catch(e => console.error('Failed to copy invite link:', e));
 		} catch (e) {
 			console.error('Failed to copy invite link:', e);
 		}
@@ -901,11 +1061,16 @@
 		</div>
 		{#if activeTab === 'members' && isGroupChat && !hasLeft}
 			<div class="members-panel">
+				{#if pickingNewAdmin}
+					<p class="admin-pick-prompt">pick a new admin before leaving</p>
+				{/if}
 				{#each groupMembers as member}
-					<button class="member-row" onclick={() => member.did !== myDid && toggleMemberProfile(member.did)}>
+					<button class="member-row" onclick={() => member.did !== myDid && !pickingNewAdmin && toggleMemberProfile(member.did)}>
 						<span class="member-name">{member.displayName}</span>
 						<span class="member-role">{member.role ?? 'member'}</span>
-						{#if member.did !== myDid}
+						{#if pickingNewAdmin && member.did !== myDid}
+							<button class="small pick-admin-btn" onclick={(e) => { e.stopPropagation(); handleTransferAndLeave(member.did); }}>make admin & leave</button>
+						{:else if member.did !== myDid}
 							<span class="expand-arrow">{expandedMember === member.did ? '▾' : '›'}</span>
 						{/if}
 					</button>
@@ -940,6 +1105,9 @@
 								<div class="card-actions">
 									<button class="small" onclick={() => handleDmFromGroup(member.did)}>message</button>
 									{#if isAdmin && member.did !== myDid}
+										{#if member.role !== 'admin'}
+											<button class="small" onclick={() => handleTransferAdmin(member.did)}>make admin</button>
+										{/if}
 										<button class="small muted" onclick={() => handleKick(member.did)}>remove</button>
 									{/if}
 								</div>
@@ -1011,7 +1179,14 @@
 					{/if}
 				{/if}
 
-				<button class="small muted leave-btn" onclick={handleLeave}>leave group</button>
+				{#if leaveError}
+					<p class="leave-error">{leaveError}</p>
+				{/if}
+				{#if pickingNewAdmin}
+					<button class="small muted" onclick={() => { pickingNewAdmin = false; leaveError = ''; }}>cancel</button>
+				{:else}
+					<button class="small muted leave-btn" onclick={handleLeave}>leave group</button>
+				{/if}
 			</div>
 		{/if}
 
@@ -1115,7 +1290,15 @@
 		{/if}
 	</div>
 
-	{#if hasLeft}
+	{#if pendingIncomingInvite}
+		<div class="invite-banner">
+			<span class="left-text">{pendingIncomingInvite.senderDisplayName} wants to chat.</span>
+			<div class="invite-banner-actions">
+				<button class="invite-accept" onclick={handleAcceptIncoming}>accept</button>
+				<button class="invite-ignore" onclick={handleIgnoreIncoming}>ignore</button>
+			</div>
+		</div>
+	{:else if hasLeft}
 		<div class="left-banner">
 			{#if isGroupChat}
 				<span class="left-text">you left this group.</span>
@@ -1156,6 +1339,11 @@
 			{#if rejoinError}
 				<span class="left-error">{rejoinError}</span>
 			{/if}
+		</div>
+	{:else if outgoingInviteSent && !isGroupChat}
+		<div class="invite-banner">
+			<span class="invite-sent-title">request sent</span>
+			<span class="left-text">you can send more messages after your request has been accepted.</span>
 		</div>
 	{:else if activeTab === 'chat' || !isGroupChat}
 		{#if attachError}
@@ -1588,16 +1776,32 @@
 			border-color: #444;
 		}
 	}
+	.admin-pick-prompt {
+		font-size: 13px;
+		color: var(--text-muted);
+		padding: 8px 12px;
+		text-align: center;
+	}
+	.pick-admin-btn {
+		margin-left: auto;
+		font-size: 11px;
+	}
 	.leave-btn {
 		margin-top: 8px;
 		color: var(--danger);
 		border-color: transparent;
+	}
+	.leave-error {
+		font-size: 12px;
+		color: var(--danger);
+		margin: 4px 0 0;
 	}
 
 	/* Left banner */
 	.left-banner {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 		gap: 8px;
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
@@ -1607,6 +1811,53 @@
 	.left-text {
 		color: var(--text-muted);
 		font-size: 14px;
+	}
+
+	/* Invite banners (incoming request + outgoing sent) */
+	.invite-banner {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: 16px;
+		text-align: center;
+	}
+	.invite-banner-actions {
+		display: flex;
+		gap: 8px;
+		width: 100%;
+	}
+	.invite-accept {
+		flex: 1;
+		padding: 10px 16px;
+		border-radius: var(--radius);
+		border: 1px solid var(--border);
+		background: var(--bg-surface);
+		color: var(--text);
+		font-size: 14px;
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.invite-accept:hover { background: var(--bg-hover); }
+	}
+	.invite-ignore {
+		padding: 10px 16px;
+		border-radius: var(--radius);
+		border: 1px solid var(--border);
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 14px;
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.invite-ignore:hover { color: var(--text); }
+	}
+	.invite-sent-title {
+		font-size: 15px;
+		font-weight: 500;
+		color: var(--text);
 	}
 	.left-error {
 		color: var(--danger);

@@ -240,12 +240,14 @@ export function addMessage(groupId: string, msg: DecryptedMessage, updatedKeys?:
 	conversationsStore.update(convos => {
 		const updated = convos.map(c => {
 			if (c.groupId !== groupId) return c;
+			// Dedup: skip if a message with this ID already exists
+			if (c.messages.some(m => m.id === msg.id)) return c;
 			return {
 				...c,
 				messages: [...c.messages, msg],
 				lastMessage: msg.text,
 				lastMessageAt: msg.timestamp,
-				unreadCount: msg.isMine || c.muted ? c.unreadCount : c.unreadCount + 1,
+				unreadCount: msg.isMine || c.muted || msg.senderDid === 'system' ? c.unreadCount : c.unreadCount + 1,
 				keys: updatedKeys ? serializeKeys(updatedKeys) : c.keys,
 			};
 		});

@@ -171,6 +171,23 @@ invitationRoutes.post('/dm/:id/accept', async (c) => {
 });
 
 /**
+ * POST /invitations/dm/:id/decline
+ * Decline a DM invitation without blocking (for "ignore").
+ */
+invitationRoutes.post('/dm/:id/decline', async (c) => {
+	const id = c.req.param('id');
+
+	const inv = await db.select().from(dmInvitations).where(eq(dmInvitations.id, id)).get();
+	if (!inv || inv.status !== 'pending') {
+		return c.json({ error: 'Invalid invitation' }, 400);
+	}
+
+	await db.update(dmInvitations).set({ status: 'declined' }).where(eq(dmInvitations.id, id));
+
+	return c.json({ ok: true });
+});
+
+/**
  * POST /invitations/dm/:id/block
  * Block the sender and mark invitation as blocked.
  */

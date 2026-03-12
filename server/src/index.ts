@@ -245,6 +245,10 @@ function initDb() {
 	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN view_once INTEGER DEFAULT 0'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN expires_at INTEGER'); } catch {}
 
+	// Group view-once: track which group a media belongs to + who has viewed it
+	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN group_id TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN viewed_by TEXT'); } catch {}
+
 	// Profile instagram + link columns
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN instagram TEXT'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN profile_link TEXT'); } catch {}
@@ -457,24 +461,11 @@ export default {
 					return;
 				}
 
+				// DM messages are now relayed from the REST POST /messages handler
+				// (which includes the DB-assigned id for proper dedup). No WS relay needed here.
 				if (data.type === 'message' && data.recipientDid) {
 					const senderDid = (ws as any).did;
 					if (senderDid) touchLastSeen(senderDid);
-					const recipient = wsClients.get(data.recipientDid);
-					if (recipient) {
-						recipient.send(JSON.stringify(data));
-					} else {
-						// Recipient offline — send push notification
-						const senderProfile = senderDid
-							? await db.select({ displayName: profiles.displayName }).from(profiles).where(eq(profiles.did, senderDid)).get()
-							: null;
-						sendPushNotification(data.recipientDid, {
-							title: senderProfile?.displayName ?? 'New message',
-							body: 'You have a new message',
-							tag: `msg-${data.groupId || 'dm'}`,
-							data: { url: data.groupId ? `/chat/${data.groupId}` : '/chat' },
-						}).catch(() => {});
-					}
 				}
 
 				// Sealed sender message — server intentionally ignores (ws as any).did
@@ -581,7 +572,12 @@ export default {
 		},
 		close(ws: any) {
 			if ((ws as any).did) {
-				wsClients.delete((ws as any).did);
+				// Only remove if this is still the active connection for this DID.
+				// Prevents race: old WS close fires AFTER new reconnection registers,
+				// which would delete the new entry and break all real-time delivery.
+				if (wsClients.get((ws as any).did) === ws) {
+					wsClients.delete((ws as any).did);
+				}
 			}
 		}
 	}

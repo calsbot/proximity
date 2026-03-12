@@ -80,6 +80,19 @@ let unsubMessage: (() => void) | null = null;
 // Track server message IDs we've already processed (dedup for gte polling)
 const processedServerIds = new Set<string>();
 
+// --- Pending sealed group messages (retry on key_rotation) ---
+// When a sealed group message arrives but can't be decrypted (sender key not yet available),
+// queue it here. On key_rotation events, retry decryption for that group.
+interface PendingGroupMessage {
+	data: { groupId: string; senderDid: string; text?: string; ciphertext?: string; nonce?: string; epoch?: number; id?: string; createdAt?: string; recipientDid?: string; dhPublicKey?: string; previousCounter?: number };
+	dedupId: string;
+	retries: number;
+	addedAt: number;
+}
+const pendingGroupMessages = new Map<string, PendingGroupMessage[]>(); // groupId → messages
+const MAX_PENDING_RETRIES = 5;
+const PENDING_TTL = 60_000; // discard after 60s
+
 // --- Delivery Token Persistence (IndexedDB) ---
 
 let myGlobalDeliveryToken: string | null = null;
@@ -254,7 +267,21 @@ export async function initChat(): Promise<void> {
 				detail: { groupId: data.groupId, senderDisplayName: data.senderDisplayName }
 			}));
 		}
+		if (data.type === 'group_invite') {
+			// New group invitation received — increment request badge
+			requestCountStore.update(n => n + 1);
+			window.dispatchEvent(new CustomEvent('group-invite', {
+				detail: { groupId: data.groupId, inviteId: data.inviteId, groupName: data.groupName, inviterDid: data.inviterDid }
+			}));
+		}
 		if (data.type === 'system_message') {
+			// Content-based dedup: same system text for same group within a 30-second window
+			// Uses a time bucket so legitimate re-joins after 30s still show up
+			const timeBucket = Math.floor(Date.now() / 30000);
+			const sysDedupId = `sys-${data.groupId}-${data.text}-${timeBucket}`;
+			if (processedServerIds.has(sysDedupId)) return;
+			processedServerIds.add(sysDedupId);
+
 			// Auto-create conversation if needed
 			const convos = get(conversationsStore);
 			if (!convos.find(c => c.groupId === data.groupId)) {
@@ -264,7 +291,7 @@ export async function initChat(): Promise<void> {
 				} catch {}
 			}
 			const msg: DecryptedMessage = {
-				id: `system-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+				id: sysDedupId,
 				senderDid: 'system',
 				text: data.text,
 				timestamp: new Date().toISOString(),
@@ -273,8 +300,18 @@ export async function initChat(): Promise<void> {
 			addMessage(data.groupId, msg);
 		}
 		if (data.type === 'member_joined') {
-			// Admin auto-redistribute group key when a new member joins
+			// Auto-redistribute group key when a new member joins
 			await handleMemberJoined(data);
+			// Notify UI so member list and count update in real-time
+			window.dispatchEvent(new CustomEvent('group-member-joined', {
+				detail: { groupId: data.groupId, memberDid: data.memberDid }
+			}));
+		}
+		if (data.type === 'role_changed') {
+			// Role changed (e.g. admin transfer) — just refresh the UI, no key redistribution needed
+			window.dispatchEvent(new CustomEvent('group-member-joined', {
+				detail: { groupId: data.groupId, memberDid: data.memberDid }
+			}));
 		}
 	});
 
@@ -426,20 +463,8 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 				ephemeralPublicKey: sealed.ephemeralPublicKey,
 				nonce: sealed.nonce,
 			});
-		} else {
-			// Sealed failed — send unsealed via WS for real-time delivery
-			wsSend({
-				type: 'message',
-				groupId: encrypted.groupId,
-				senderDid: encrypted.senderDid,
-				recipientDid: encrypted.recipientDid,
-				epoch: encrypted.epoch,
-				ciphertext: encrypted.ciphertext,
-				nonce: encrypted.nonce,
-				dhPublicKey: encrypted.dhPublicKey,
-				previousCounter: encrypted.previousCounter,
-			});
 		}
+		// DM unsealed fallback: server relays via WS after REST store (no client-side wsSend needed)
 	} else {
 		// Unsealed path (subsequent messages before token exchange, or groups)
 		try {
@@ -456,17 +481,21 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 		} catch (e) {
 			console.error('Failed to send message via REST:', e);
 		}
-		wsSend({
-			type: 'message',
-			groupId: encrypted.groupId,
-			senderDid: encrypted.senderDid,
-			recipientDid: encrypted.recipientDid,
-			epoch: encrypted.epoch,
-			ciphertext: encrypted.ciphertext,
-			nonce: encrypted.nonce,
-			dhPublicKey: encrypted.dhPublicKey,
-			previousCounter: encrypted.previousCounter,
-		});
+		// For groups, relay via WS (server doesn't relay group messages from REST).
+		// For DMs, the server now relays via WS after REST store — no client wsSend needed.
+		if (convo.isGroup) {
+			wsSend({
+				type: 'message',
+				groupId: encrypted.groupId,
+				senderDid: encrypted.senderDid,
+				recipientDid: encrypted.recipientDid,
+				epoch: encrypted.epoch,
+				ciphertext: encrypted.ciphertext,
+				nonce: encrypted.nonce,
+				dhPublicKey: encrypted.dhPublicKey,
+				previousCounter: encrypted.previousCounter,
+			});
+		}
 
 		// After first unsealed DM, trigger token exchange
 		if (!convo.isGroup && !convo.myDeliveryToken && myGlobalDeliveryToken) {
@@ -585,18 +614,6 @@ export async function sendDMMediaMessage(
 				ephemeralPublicKey: sealed.ephemeralPublicKey,
 				nonce: sealed.nonce,
 			});
-		} else {
-			wsSend({
-				type: 'message',
-				groupId: encMsg.groupId,
-				senderDid: encMsg.senderDid,
-				recipientDid: encMsg.recipientDid,
-				epoch: encMsg.epoch,
-				ciphertext: encMsg.ciphertext,
-				nonce: encMsg.nonce,
-				dhPublicKey: encMsg.dhPublicKey,
-				previousCounter: encMsg.previousCounter,
-			});
 		}
 	} else {
 		try {
@@ -613,17 +630,7 @@ export async function sendDMMediaMessage(
 		} catch (e) {
 			console.error('Failed to send DM media via REST:', e);
 		}
-		wsSend({
-			type: 'message',
-			groupId: encMsg.groupId,
-			senderDid: encMsg.senderDid,
-			recipientDid: encMsg.recipientDid,
-			epoch: encMsg.epoch,
-			ciphertext: encMsg.ciphertext,
-			nonce: encMsg.nonce,
-			dhPublicKey: encMsg.dhPublicKey,
-			previousCounter: encMsg.previousCounter,
-		});
+		// Server relays DM via WS after REST store — no client wsSend needed
 	}
 
 	processedServerIds.add(`server-${encMsg.epoch}-${state.identity.did}`);
@@ -767,13 +774,13 @@ export async function sendGroupMediaMessage(
 	const fileData = await fileToUint8Array(file);
 	const encrypted = encryptMedia(fileData);
 
-	// Upload encrypted blob
+	// Upload encrypted blob — pass groupId so server can track per-member views for view-once
 	const blob = new Blob([encrypted.encryptedBlob]);
 	let result: { ok: boolean; mediaId: string };
 	if (convo.groupDeliveryToken) {
-		result = await uploadMediaSealed(convo.groupDeliveryToken, blob, 'application/octet-stream', viewOnce);
+		result = await uploadMediaSealed(convo.groupDeliveryToken, blob, 'application/octet-stream', viewOnce, groupId);
 	} else {
-		result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce);
+		result = await uploadMedia(state.identity.did, blob, 'application/octet-stream', undefined, viewOnce, groupId);
 	}
 
 	// Create structured payload
@@ -923,9 +930,24 @@ async function handleIncomingMessage(data: {
 	// Don't process our own messages
 	if (data.senderDid === state.identity.did) return;
 
-	// Deduplicate: use server-assigned ID when available (polled), fall back to epoch+sender (WS)
-	const dedupId = data.id ? `srv-${data.id}` : `server-${data.epoch}-${data.senderDid}`;
+	// Deduplicate: use server-assigned ID when available (polled), fall back to epoch+sender+dhKey (WS)
+	// Include DH key prefix so post-ratchet messages (same epoch, different DH key) aren't falsely deduped
+	const dedupId = data.id ? `srv-${data.id}` : `server-${data.epoch}-${data.senderDid}-${(data.dhPublicKey || data.ciphertext || '').slice(0, 12)}`;
 	if (processedServerIds.has(dedupId)) return;
+
+	// Also check cross-path dedup IDs early (before any await) to prevent concurrent processing
+	const contentKey = data.ciphertext.slice(0, 40);
+	const grpDedupId = `grp-${data.groupId}-${data.senderDid}-${contentKey}`;
+	const wsId = `server-${data.epoch}-${data.senderDid}-${(data.dhPublicKey || data.ciphertext || '').slice(0, 12)}`;
+	if (processedServerIds.has(grpDedupId) || processedServerIds.has(wsId)) {
+		processedServerIds.add(dedupId);
+		return;
+	}
+
+	// Claim ALL dedup IDs immediately (synchronously) to prevent concurrent polls/WS from racing
+	processedServerIds.add(dedupId);
+	processedServerIds.add(grpDedupId);
+	processedServerIds.add(wsId);
 
 	console.log(`[chat] Incoming message: group=${data.groupId.slice(0, 8)} epoch=${data.epoch} from=${data.senderDid.slice(-8)} id=${dedupId.slice(0, 16)} dh=${data.dhPublicKey ? 'yes' : 'no'}`);
 
@@ -1006,31 +1028,10 @@ async function handleIncomingMessage(data: {
 	// Don't process messages in conversations we've left — prevents ratchet desync
 	// (sealed messages bypass the server's dm_leaves check since groupId is hidden)
 	if (convo.left) {
-		processedServerIds.add(dedupId);
 		return;
 	}
 
-	// Content-based dedup key — matches WS group message handler
-	const contentKey = data.ciphertext.slice(0, 40);
-	const grpDedupId = `grp-${data.groupId}-${data.senderDid}-${contentKey}`;
-	if (processedServerIds.has(grpDedupId)) {
-		processedServerIds.add(dedupId);
-		return;
-	}
-
-	// Fallback dedup: check if we already have this exact message or a WS/poll version of it
-	const wsId = `server-${data.epoch}-${data.senderDid}`;
-	if (convo.messages.some(m => m.id === dedupId || m.id === wsId || m.id === grpDedupId)) {
-		processedServerIds.add(dedupId);
-		processedServerIds.add(wsId);
-		processedServerIds.add(grpDedupId);
-		return;
-	}
-
-	// Claim this message immediately to prevent concurrent processing (WS + poll race)
-	// If two handlers reach this point for the same message, only the first one proceeds
-	processedServerIds.add(grpDedupId);
-	processedServerIds.add(dedupId);
+	// All dedup IDs were claimed immediately at the top (before async code)
 
 	try {
 		let plaintext: string;
@@ -1059,10 +1060,10 @@ async function handleIncomingMessage(data: {
 						if (retry) {
 							plaintext = retry.plaintext;
 						} else {
-							try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+							plaintext = 'message could not be decrypted';
 						}
 					} else {
-						try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+						plaintext = 'message could not be decrypted';
 					}
 				}
 			} else {
@@ -1074,7 +1075,7 @@ async function handleIncomingMessage(data: {
 					try {
 						plaintext = decryptGroupMessage(data.ciphertext, data.nonce, decryptKey);
 					} catch {
-						try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+						plaintext = 'message could not be decrypted';
 					}
 				} else {
 					// No key for this sender — try bootstrapping
@@ -1089,7 +1090,7 @@ async function handleIncomingMessage(data: {
 						try {
 							plaintext = decryptGroupMessage(data.ciphertext, data.nonce, refreshedKey);
 						} catch {
-							try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+							plaintext = 'message could not be decrypted';
 						}
 					} else if (isSealed && refreshed?.senderKeys) {
 						// Retry with all keys after bootstrap
@@ -1097,14 +1098,34 @@ async function handleIncomingMessage(data: {
 							data.ciphertext, data.nonce,
 							refreshed.senderKeys, refreshed.groupKeys, data.epoch
 						);
-						plaintext = retry?.plaintext ?? data.ciphertext;
+						plaintext = retry?.plaintext ?? 'message could not be decrypted';
 					} else {
-						try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+						plaintext = 'message could not be decrypted';
 					}
 				}
 			}
+
+			// If sealed group message failed to decrypt, queue for retry on key_rotation
+			// (sender may not have distributed their key yet)
+			if (plaintext === 'message could not be decrypted' && data.senderDid === 'sealed') {
+				const existing = pendingGroupMessages.get(data.groupId) ?? [];
+				const alreadyQueued = existing.some(p => p.dedupId === dedupId);
+				if (!alreadyQueued) {
+					existing.push({ data, dedupId, retries: 0, addedAt: Date.now() });
+					pendingGroupMessages.set(data.groupId, existing);
+					console.log(`[chat] Queued sealed message ${dedupId.slice(0, 16)} for retry on key_rotation (${existing.length} pending)`);
+					// Schedule a fallback retry in case key_rotation already fired or never comes
+					setTimeout(async () => {
+						await bootstrapSenderKeys(data.groupId);
+						await retryPendingGroupMessages(data.groupId);
+					}, 5000);
+				}
+				// Keep dedup IDs SET so polls don't re-process this message
+				// (the retry function handles dedup ID management itself)
+				return; // Don't show "could not be decrypted" — will retry later
+			}
 		} else if (!convo.keys) {
-			try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+			plaintext = 'message could not be decrypted';
 		} else {
 			const keys = deserializeKeys(convo.keys);
 			console.log(`[chat] Decrypting: recvCounter=${keys.recvCounter} msgEpoch=${data.epoch} dhRatchet=${data.dhPublicKey ? 'yes' : 'legacy'}`);
@@ -1140,7 +1161,7 @@ async function handleIncomingMessage(data: {
 
 					// Mark processed but don't add to message list
 					processedServerIds.add(dedupId);
-					processedServerIds.add(`server-${data.epoch}-${data.senderDid}`);
+					processedServerIds.add(`server-${data.epoch}-${data.senderDid}-${(data.dhPublicKey || data.ciphertext || '').slice(0, 12)}`);
 					if (data.id) processedServerIds.add(`srv-${data.id}`);
 					return;
 				}
@@ -1191,7 +1212,7 @@ async function handleIncomingMessage(data: {
 		addMessage(data.groupId, msg, updatedKeys);
 		// Mark both ID formats as processed (WS and poll use different IDs for same message)
 		processedServerIds.add(dedupId);
-		processedServerIds.add(`server-${data.epoch}-${data.senderDid}`);
+		processedServerIds.add(`server-${data.epoch}-${data.senderDid}-${(data.dhPublicKey || data.ciphertext || '').slice(0, 12)}`);
 		if (data.id) processedServerIds.add(`srv-${data.id}`);
 		console.log(`[chat] Decrypted OK: "${plaintext.slice(0, 50)}"`);
 	} catch (e) {
@@ -1326,7 +1347,7 @@ async function handleIncomingGroupMessage(data: {
 				try {
 					plaintext = decryptGroupMessage(data.ciphertext, data.nonce!, decryptKey);
 				} catch {
-					try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+					plaintext = 'message could not be decrypted';
 				}
 			}
 		}
@@ -1349,7 +1370,24 @@ async function handleIncomingGroupMessage(data: {
 				}
 			}
 			if (plaintext === undefined) {
-				try { plaintext = atob(data.ciphertext); } catch { plaintext = data.ciphertext; }
+				// If sealed and can't decrypt, queue for retry on key_rotation
+				if (isSealed) {
+					const existing = pendingGroupMessages.get(data.groupId) ?? [];
+					const alreadyQueued = existing.some(p => p.dedupId === dedupId);
+					if (!alreadyQueued) {
+						existing.push({ data: { ...data, senderDid: data.senderDid }, dedupId, retries: 0, addedAt: Date.now() });
+						pendingGroupMessages.set(data.groupId, existing);
+						console.log(`[chat] Queued sealed WS message ${dedupId.slice(0, 16)} for retry on key_rotation (${existing.length} pending)`);
+						// Schedule a fallback retry
+						setTimeout(async () => {
+							await bootstrapSenderKeys(data.groupId);
+							await retryPendingGroupMessages(data.groupId);
+						}, 5000);
+					}
+					// Keep dedup IDs SET so future polls don't re-process
+					return;
+				}
+				plaintext = 'message could not be decrypted';
 			}
 		}
 	} else if (data.text) {
@@ -1374,11 +1412,13 @@ async function handleIncomingGroupMessage(data: {
 
 	// Resolve sender display name
 	let senderName: string | undefined;
-	try {
-		const did = resolvedSenderDid !== 'sealed' ? resolvedSenderDid : data.senderDid;
-		const profile = await getProfile(did);
-		senderName = profile.displayName;
-	} catch {}
+	const profileDid = resolvedSenderDid !== 'sealed' ? resolvedSenderDid : data.senderDid;
+	if (profileDid !== 'sealed') {
+		try {
+			const profile = await getProfile(profileDid);
+			senderName = profile.displayName;
+		} catch {}
+	}
 
 	const msg: DecryptedMessage = {
 		...parsed,
@@ -1482,6 +1522,7 @@ async function sendTokenExchange(groupId: string, token: string): Promise<void> 
 	setDeliveryTokens(groupId, token, undefined);
 
 	// Send via REST (unsealed — this is before sealed sender is active)
+	// Server relays to recipient via WS after REST store — no client wsSend needed
 	try {
 		await apiSendMessage({
 			groupId: encrypted.groupId,
@@ -1497,19 +1538,6 @@ async function sendTokenExchange(groupId: string, token: string): Promise<void> 
 		console.error('[sealed] Failed to send token exchange via REST:', e);
 	}
 
-	// Also via WS
-	wsSend({
-		type: 'message',
-		groupId: encrypted.groupId,
-		senderDid: encrypted.senderDid,
-		recipientDid: encrypted.recipientDid,
-		epoch: encrypted.epoch,
-		ciphertext: encrypted.ciphertext,
-		nonce: encrypted.nonce,
-		dhPublicKey: encrypted.dhPublicKey,
-		previousCounter: encrypted.previousCounter,
-	});
-
 	processedServerIds.add(`server-${encrypted.epoch}-${state.identity.did}`);
 	console.log(`[sealed] Sent delivery token to ${convo.peerDid.slice(-8)}`);
 }
@@ -1520,10 +1548,13 @@ async function sendTokenExchange(groupId: string, token: string): Promise<void> 
 function startPolling(): void {
 	if (pollTimer) return;
 
-	// Do an immediate first poll to catch any missed messages
-	doPoll();
-
-	pollTimer = setInterval(doPoll, 10000);
+	// Use setTimeout (not setInterval) so the next poll only fires AFTER the current
+	// one finishes. setInterval causes concurrent polls that race past dedup checks.
+	async function pollLoop() {
+		await doPoll();
+		pollTimer = setTimeout(pollLoop, 10000);
+	}
+	pollLoop();
 }
 
 /**
@@ -1544,8 +1575,17 @@ async function doPoll(): Promise<void> {
 		const messages = Array.isArray(result) ? result : result.messages;
 		const sealed = Array.isArray(result) ? [] : (result.sealed ?? []);
 
-		if (messages.length > 0 || sealed.length > 0) {
-			console.log(`[chat] Poll found ${messages.length} message(s), ${sealed.length} sealed`);
+		// Only log genuinely new (unprocessed) messages to avoid console spam
+		const newMessages = messages.filter((msg: any) => {
+			const id = msg.id ? `srv-${msg.id}` : `server-${msg.epoch}-${msg.senderDid}-${(msg.dhPublicKey || msg.ciphertext || '').slice(0, 12)}`;
+			return !processedServerIds.has(id);
+		});
+		const newSealed = sealed.filter((s: any) => {
+			const id = s.id ? `srv-${s.id}` : `sealed-${s.deliveryToken?.slice(0, 12)}`;
+			return !processedServerIds.has(id);
+		});
+		if (newMessages.length > 0 || newSealed.length > 0) {
+			console.log(`[chat] Poll found ${newMessages.length} new message(s), ${newSealed.length} new sealed`);
 		}
 
 		for (const msg of messages) {
@@ -1660,24 +1700,42 @@ export async function distributeMySenderKey(groupId: string): Promise<void> {
 		return;
 	}
 
-	// Generate a delivery token for sealed sender
-	const groupToken = convo?.groupDeliveryToken ?? generateDeliveryToken();
-	const tokenHash = await hashDeliveryToken(groupToken);
+	// Resolve delivery token for sealed sender.
+	// Strategy: if we already have a canonical token (from bootstrap or prior distribution),
+	// use it. Otherwise generate a candidate and try to register — server uses INSERT-OR-IGNORE
+	// (first-writer-wins) to prevent race conditions where multiple members independently
+	// generate different tokens.
+	const existingToken = convo?.groupDeliveryToken;
+	let groupToken: string | undefined = existingToken;
 
-	// Wrap my sender key for each other member
+	if (!existingToken) {
+		// No local token — generate a candidate and try to register it
+		const candidate = generateDeliveryToken();
+		const candidateHash = await hashDeliveryToken(candidate);
+		try {
+			const result = await registerGroupDeliveryToken(groupId, candidateHash);
+			if (!result.exists) {
+				// We're the first to register — our token is canonical
+				groupToken = candidate;
+			}
+			// If exists: another member registered first — we'll get their token via bootstrap.
+			// Don't use our candidate (leave groupToken undefined).
+		} catch {
+			// Registration failed — proceed without sealed sender
+		}
+	}
+
+	// Wrap my sender key for each other member (include delivery token only if canonical)
 	const wrappedKeys = wrapSenderKeyForMembers(mySenderKey, state.identity.boxSecretKey, membersWithKeys, groupToken);
 
 	// Store on server
 	await storeGroupKeys(groupId, state.identity.did, wrappedKeys, epoch);
 
-	// Register delivery token
-	try {
-		await registerGroupDeliveryToken(groupId, tokenHash);
-	} catch {}
-
 	// Store locally
 	updateSenderKeys(groupId, { [state.identity.did]: mySenderKey }, mySenderKey, epoch);
-	setGroupDeliveryToken(groupId, groupToken);
+	if (groupToken) {
+		setGroupDeliveryToken(groupId, groupToken);
+	}
 
 	// Notify others to fetch the new key
 	wsSend({
@@ -1687,7 +1745,7 @@ export async function distributeMySenderKey(groupId: string): Promise<void> {
 		memberDids: membersWithKeys.map(m => m.did),
 	});
 
-	console.log(`[sender-keys] Distributed my sender key for ${groupId.slice(0, 8)} to ${membersWithKeys.length} members`);
+	console.log(`[sender-keys] Distributed my sender key for ${groupId.slice(0, 8)} to ${membersWithKeys.length} members (sealed: ${!!groupToken})`);
 }
 
 /** @deprecated compat shim */
@@ -1732,8 +1790,9 @@ export async function rotateGroupKey(
 
 	await storeGroupKeys(groupId, state.identity.did, wrappedKeys, newEpoch);
 
+	// Force-overwrite the delivery token (rotation after member kick/leave)
 	try {
-		await registerGroupDeliveryToken(groupId, tokenHash);
+		await registerGroupDeliveryToken(groupId, tokenHash, true);
 	} catch {}
 
 	// Store locally
@@ -1801,10 +1860,114 @@ export async function exchangeProfileKeysWithGroup(groupId: string): Promise<voi
 }
 
 /**
- * Handle key_rotation WS event — fetch new sender keys from server.
+ * Handle key_rotation WS event — fetch new sender keys from server,
+ * then retry any pending sealed group messages that couldn't be decrypted.
  */
 async function handleKeyRotation(data: { groupId: string; epoch: number }): Promise<void> {
 	await bootstrapSenderKeys(data.groupId);
+	await retryPendingGroupMessages(data.groupId);
+
+	// Schedule a delayed retry in case keys weren't on the server yet when bootstrap ran
+	const pending = pendingGroupMessages.get(data.groupId);
+	if (pending && pending.length > 0) {
+		setTimeout(async () => {
+			await bootstrapSenderKeys(data.groupId);
+			await retryPendingGroupMessages(data.groupId);
+		}, 3000);
+	}
+}
+
+/**
+ * Retry decrypting pending sealed group messages after new sender keys arrived.
+ */
+async function retryPendingGroupMessages(groupId: string): Promise<void> {
+	const pending = pendingGroupMessages.get(groupId);
+	if (!pending || pending.length === 0) return;
+
+	const now = Date.now();
+	// Filter out expired messages
+	const valid = pending.filter(p => now - p.addedAt < PENDING_TTL);
+	if (valid.length === 0) {
+		pendingGroupMessages.delete(groupId);
+		return;
+	}
+
+	console.log(`[chat] Retrying ${valid.length} pending sealed message(s) for ${groupId.slice(0, 8)}`);
+
+	const stillPending: PendingGroupMessage[] = [];
+
+	for (const pm of valid) {
+		pm.retries++;
+
+		// Try decrypting with fresh sender keys
+		const convo = get(conversationsStore).find(c => c.groupId === groupId);
+		if (!convo?.senderKeys || Object.keys(convo.senderKeys).length === 0) {
+			if (pm.retries < MAX_PENDING_RETRIES) stillPending.push(pm);
+			continue;
+		}
+
+		const result = tryDecryptWithAllSenderKeys(
+			pm.data.ciphertext!, pm.data.nonce!,
+			convo.senderKeys, convo.groupKeys, pm.data.epoch
+		);
+
+		if (result) {
+			console.log(`[chat] Retry succeeded for pending message ${pm.dedupId.slice(0, 16)}`);
+			// Parse the decrypted payload
+			const parsed = parsePayload(result.plaintext);
+			const resolvedSenderDid = (parsed.senderDid && parsed.senderDid !== '') ? parsed.senderDid : result.senderDid;
+
+			// Skip own messages
+			const state = get(identityStore);
+			if (resolvedSenderDid === state.identity?.did) continue;
+
+			// Resolve sender name
+			let senderName: string | undefined;
+			if (resolvedSenderDid !== 'sealed') {
+				try {
+					const profile = await getProfile(resolvedSenderDid);
+					senderName = profile.displayName;
+				} catch {}
+			}
+
+			const msg: DecryptedMessage = {
+				...parsed,
+				id: pm.dedupId || `retry-${Date.now()}`,
+				senderDid: resolvedSenderDid,
+				senderName,
+				text: parsed.text ?? result.plaintext,
+				timestamp: pm.data.createdAt || new Date().toISOString(),
+				isMine: false,
+			};
+			addMessage(groupId, msg);
+
+			// Mark as processed
+			processedServerIds.add(pm.dedupId);
+			const contentKey = (pm.data.ciphertext || '').slice(0, 40);
+			processedServerIds.add(`grp-${pm.data.groupId}-${pm.data.senderDid}-${contentKey}`);
+			if (pm.data.id) processedServerIds.add(`srv-${pm.data.id}`);
+		} else if (pm.retries < MAX_PENDING_RETRIES) {
+			stillPending.push(pm);
+		} else {
+			console.warn(`[chat] Giving up on pending message ${pm.dedupId.slice(0, 16)} after ${pm.retries} retries`);
+			// Show as unreadable after max retries
+			const msg: DecryptedMessage = {
+				id: pm.dedupId || `failed-${Date.now()}`,
+				senderDid: 'sealed',
+				text: 'message could not be decrypted',
+				timestamp: pm.data.createdAt || new Date().toISOString(),
+				isMine: false,
+			};
+			addMessage(groupId, msg);
+			processedServerIds.add(pm.dedupId);
+		}
+	}
+
+	if (stillPending.length > 0) {
+		pendingGroupMessages.set(groupId, stillPending);
+	} else {
+		pendingGroupMessages.delete(groupId);
+	}
 }
 
 /**

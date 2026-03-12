@@ -5,7 +5,7 @@
 /** API base: env var in dev, same origin in production. */
 export const BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, {
 		headers: { 'Content-Type': 'application/json', ...opts.headers as Record<string, string> },
 		...opts
@@ -251,6 +251,13 @@ export function kickMember(groupId: string, did: string, targetDid: string) {
 	});
 }
 
+export function transferAdmin(groupId: string, did: string, targetDid: string) {
+	return request<{ ok: boolean }>(`/groups/${groupId}/transfer-admin`, {
+		method: 'POST',
+		body: JSON.stringify({ did, targetDid })
+	});
+}
+
 // --- Invite Links ---
 
 export function setInviteLinkHash(groupId: string, did: string, inviteKeyHash: string, opts?: { maxUses?: number | null; expiresInHours?: number | null }) {
@@ -299,6 +306,16 @@ export function listMyAdminJoinRequests(did: string) {
 		requesterName: string;
 		createdAt: string;
 	}>>(`/groups/my-admin-join-requests?did=${encodeURIComponent(did)}`);
+}
+
+export function listMyPendingRequests(did: string) {
+	return request<Array<{
+		id: string;
+		groupId: string;
+		groupName: string;
+		status: string;
+		createdAt: string;
+	}>>(`/groups/my-pending-requests?did=${encodeURIComponent(did)}`);
 }
 
 export function revokeInviteLink(groupId: string, did: string) {
@@ -397,13 +414,14 @@ export function getMyGroupKeys(groupId: string, did: string) {
 
 // --- Media ---
 
-export async function uploadMedia(uploaderDid: string, encryptedFile: Blob, mimeType: string, mediaKeyWrapped?: string, viewOnce?: boolean) {
+export async function uploadMedia(uploaderDid: string, encryptedFile: Blob, mimeType: string, mediaKeyWrapped?: string, viewOnce?: boolean, groupId?: string) {
 	const formData = new FormData();
 	formData.append('file', encryptedFile);
 	formData.append('uploaderDid', uploaderDid);
 	formData.append('mimeType', mimeType);
 	if (mediaKeyWrapped) formData.append('mediaKeyWrapped', mediaKeyWrapped);
 	if (viewOnce) formData.append('viewOnce', 'true');
+	if (groupId) formData.append('groupId', groupId);
 
 	const res = await fetch(`${BASE}/media/upload`, {
 		method: 'POST',
@@ -442,12 +460,13 @@ export function notifyMediaViewed(mediaId: string, did: string) {
 
 // --- Sealed Media Upload ---
 
-export async function uploadMediaSealed(deliveryToken: string, encryptedFile: Blob, mimeType: string, viewOnce?: boolean) {
+export async function uploadMediaSealed(deliveryToken: string, encryptedFile: Blob, mimeType: string, viewOnce?: boolean, groupId?: string) {
 	const formData = new FormData();
 	formData.append('file', encryptedFile);
 	formData.append('deliveryToken', deliveryToken);
 	formData.append('mimeType', mimeType);
 	if (viewOnce) formData.append('viewOnce', 'true');
+	if (groupId) formData.append('groupId', groupId);
 
 	const res = await fetch(`${BASE}/media/upload-sealed`, {
 		method: 'POST',
@@ -482,10 +501,10 @@ export function sendSealedMessage(data: {
 	});
 }
 
-export function registerGroupDeliveryToken(groupId: string, tokenHash: string) {
-	return request<{ ok: boolean }>('/messages/group-delivery-token', {
+export function registerGroupDeliveryToken(groupId: string, tokenHash: string, force?: boolean) {
+	return request<{ ok: boolean; exists?: boolean }>('/messages/group-delivery-token', {
 		method: 'POST',
-		body: JSON.stringify({ groupId, tokenHash })
+		body: JSON.stringify({ groupId, tokenHash, ...(force ? { force: true } : {}) })
 	});
 }
 
@@ -554,6 +573,12 @@ export function acceptDMInvitation(id: string) {
 
 export function blockDMInvitation(id: string) {
 	return request<{ ok: boolean }>(`/invitations/dm/${id}/block`, {
+		method: 'POST'
+	});
+}
+
+export function declineDMInvitation(id: string) {
+	return request<{ ok: boolean }>(`/invitations/dm/${id}/decline`, {
 		method: 'POST'
 	});
 }

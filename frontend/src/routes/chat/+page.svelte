@@ -4,7 +4,7 @@
 	import { conversationsStore, removeConversation, unmarkConversationLeft, resetSealedSender } from '$lib/stores/conversations';
 	import { identityStore } from '$lib/stores/identity';
 	import { requestCountStore } from '$lib/stores/requestCount';
-	import { listPendingInvites, respondToInvite, createGroup, getDMInvitations, acceptDMInvitation, blockDMInvitation, getProfile, listMyAdminJoinRequests, respondToJoinRequest } from '$lib/api';
+	import { listPendingInvites, respondToInvite, createGroup, getDMInvitations, acceptDMInvitation, blockDMInvitation, getProfile, listMyAdminJoinRequests, listMyPendingRequests, respondToJoinRequest } from '$lib/api';
 	import { initChat, startConversation, forcePoll } from '$lib/services/chat';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
 
@@ -47,10 +47,19 @@
 		createdAt: string;
 	}
 
+	interface MyPendingRequest {
+		id: string;
+		groupId: string;
+		groupName: string;
+		status: string;
+		createdAt: string;
+	}
+
 	let conversations = $derived($conversationsStore);
 	let groupInvites = $state<GroupInvite[]>([]);
 	let dmInvitations = $state<DMInvitation[]>([]);
 	let joinRequests = $state<JoinRequest[]>([]);
+	let myPendingRequests = $state<MyPendingRequest[]>([]);
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
 
@@ -87,6 +96,9 @@
 			} catch {}
 			try {
 				joinRequests = await listMyAdminJoinRequests(did);
+			} catch {}
+			try {
+				myPendingRequests = await listMyPendingRequests(did);
 			} catch {}
 			try {
 				dmInvitations = await getDMInvitations(did);
@@ -126,7 +138,7 @@
 
 	// Badge counts for tabs
 	let totalUnread = $derived(conversations.reduce((sum, c) => sum + c.unreadCount, 0));
-	let totalInviteCount = $derived(groupInvites.length + dmInvitations.length + joinRequests.length);
+	let totalInviteCount = $derived(groupInvites.length + dmInvitations.length + joinRequests.length + myPendingRequests.length);
 	let sortedDmInvites = $derived([...dmInvitations].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
 	let sortedGroupInvites = $derived([...groupInvites].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
 	let visibleDmInvites = $derived(
@@ -136,9 +148,12 @@
 
 	async function handleGroupInvite(inviteId: string, action: 'accept' | 'decline') {
 		try {
-			await respondToInvite(inviteId, action);
+			const result = await respondToInvite(inviteId, action);
 			groupInvites = groupInvites.filter(i => i.id !== inviteId);
 			requestCountStore.update(n => Math.max(0, n - 1));
+			if (action === 'accept' && result.groupId) {
+				goto(`/chat/${result.groupId}`);
+			}
 		} catch {}
 	}
 
@@ -307,15 +322,42 @@
 		if (!myDid) return;
 		try {
 			joinRequests = await listMyAdminJoinRequests(myDid);
-			requestCountStore.set(groupInvites.length + dmInvitations.length + joinRequests.length);
+			requestCountStore.set(groupInvites.length + dmInvitations.length + joinRequests.length + myPendingRequests.length);
 		} catch {}
+	}
+
+	// Listen for real-time group invitations via WebSocket — refetch to get full invite data
+	async function handleNewGroupInvite() {
+		if (!myDid) return;
+		try {
+			groupInvites = await listPendingInvites(myDid);
+			requestCountStore.set(groupInvites.length + dmInvitations.length + joinRequests.length + myPendingRequests.length);
+		} catch {}
+	}
+
+	// When our own join request is approved/denied, remove it from pending
+	function handleMyJoinApproved(e: Event) {
+		const { groupId: gid } = (e as CustomEvent).detail;
+		myPendingRequests = myPendingRequests.filter(r => r.groupId !== gid);
+		requestCountStore.set(groupInvites.length + dmInvitations.length + joinRequests.length + myPendingRequests.length);
+	}
+	function handleMyJoinDenied(e: Event) {
+		const { groupId: gid } = (e as CustomEvent).detail;
+		myPendingRequests = myPendingRequests.filter(r => r.groupId !== gid);
+		requestCountStore.set(groupInvites.length + dmInvitations.length + joinRequests.length + myPendingRequests.length);
 	}
 
 	onMount(() => {
 		window.addEventListener('group-join-request', handleNewJoinRequest);
+		window.addEventListener('group-invite', handleNewGroupInvite);
+		window.addEventListener('group-join-approved', handleMyJoinApproved);
+		window.addEventListener('group-join-denied', handleMyJoinDenied);
 	});
 	onDestroy(() => {
 		window.removeEventListener('group-join-request', handleNewJoinRequest);
+		window.removeEventListener('group-invite', handleNewGroupInvite);
+		window.removeEventListener('group-join-approved', handleMyJoinApproved);
+		window.removeEventListener('group-join-denied', handleMyJoinDenied);
 	});
 </script>
 
@@ -409,6 +451,21 @@
 					<div class="invite-actions">
 						<button class="small" onclick={() => handleJoinRequest(req, 'approve')}>accept</button>
 						<button class="small muted" onclick={() => handleJoinRequest(req, 'deny')}>deny</button>
+					</div>
+				</div>
+			{/each}
+
+			<!-- Your pending join requests -->
+			{#each myPendingRequests as pr}
+				<div class="group-invite-row">
+					<div class="group-invite-content">
+						<span class="name">
+							{pr.groupName}
+							<span class="group-tag pending">pending</span>
+						</span>
+						<span class="preview">
+							you requested to join &middot; {timeAgo(pr.createdAt)}
+						</span>
 					</div>
 				</div>
 			{/each}
@@ -622,6 +679,10 @@
 		border: 1px solid var(--border);
 		padding: 1px 6px;
 		border-radius: var(--radius);
+	}
+	.group-tag.pending {
+		color: var(--text-muted);
+		opacity: 0.7;
 	}
 	.left-tag {
 		color: var(--danger);

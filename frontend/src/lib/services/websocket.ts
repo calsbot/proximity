@@ -138,6 +138,8 @@ function scheduleReconnect(): void {
 export function wsSend(data: any): void {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		ws.send(JSON.stringify(data));
+	} else {
+		console.warn('[ws] message dropped — not connected', data.type);
 	}
 }
 

@@ -51,6 +51,8 @@ export const media = sqliteTable('media', {
 	mimeType: text('mime_type').notNull(),
 	size: integer('size').notNull(),
 	viewOnce: integer('view_once', { mode: 'boolean' }).default(false),
+	groupId: text('group_id'), // nullable — set for group media so view-once tracks per-member views
+	viewedBy: text('viewed_by'), // JSON array of DIDs who've viewed (for group view-once)
 	expiresAt: integer('expires_at', { mode: 'timestamp' }),
 	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
 });
