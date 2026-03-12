@@ -5,6 +5,7 @@
 	import { listBlocks, unblockUser, getFlagStatus, submitAppeal } from '$lib/api';
 	import { wsStatus } from '$lib/services/websocket';
 	import { loadIdentityFromStorage, downloadIdentityBackup } from '$lib/crypto/identity';
+	import { pushSupported, pushSubscribed, notificationPermission, subscribeToPush, unsubscribeFromPush } from '$lib/services/notifications';
 
 	let identity = $derived($identityStore);
 	let location = $derived($locationStore);
@@ -56,6 +57,21 @@
 			hasAppealed = true;
 		} catch {}
 		appealSubmitting = false;
+	}
+
+	let notifToggling = $state(false);
+
+	async function togglePush() {
+		if (notifToggling || !myDid) return;
+		notifToggling = true;
+		try {
+			if ($pushSubscribed) {
+				await unsubscribeFromPush(myDid);
+			} else {
+				await subscribeToPush(myDid);
+			}
+		} catch {}
+		notifToggling = false;
 	}
 
 	let backupDownloaded = $state(false);
@@ -122,6 +138,37 @@
 			</div>
 		</div>
 	</div>
+
+	{#if $pushSupported}
+		<div class="page-container">
+			<div class="page-header">
+				<span class="page-title">notifications</span>
+			</div>
+			<div class="card-body">
+				<div class="row">
+					<span class="label">push notifications</span>
+					<button class="small" onclick={togglePush} disabled={notifToggling || $notificationPermission === 'denied'}>
+						{#if notifToggling}
+							...
+						{:else if $pushSubscribed}
+							enabled — disable
+						{:else if $notificationPermission === 'denied'}
+							blocked by browser
+						{:else}
+							enable
+						{/if}
+					</button>
+				</div>
+				{#if $notificationPermission === 'denied'}
+					<p class="note">notifications are blocked in your browser settings. you'll need to allow them there first.</p>
+				{:else if $pushSubscribed}
+					<p class="note">you'll receive push notifications when you have new messages and the app is closed.</p>
+				{:else}
+					<p class="note">enable to get notified of new messages when the app is in the background.</p>
+				{/if}
+			</div>
+		</div>
+	{/if}
 
 	<div class="page-container">
 		<div class="page-header">

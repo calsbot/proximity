@@ -13,6 +13,7 @@ export default defineConfig({
 			'/moderation': 'http://localhost:3000',
 			'/invitations': 'http://localhost:3000',
 			'/media': 'http://localhost:3000',
+			'/push': 'http://localhost:3000',
 			'/newsletter': 'http://localhost:3000',
 			'/ws': {
 				target: 'http://localhost:3000',

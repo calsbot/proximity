@@ -3,6 +3,7 @@ import { db } from '../db';
 import { blocks, reports, flags, flagThrottles, csamHashes, profiles, groupMembers, encryptedMessages, media } from '../db/schema';
 import { eq, and, gte, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
+import nacl from 'tweetnacl';
 
 export const moderationRoutes = new Hono();
 
@@ -216,17 +217,20 @@ moderationRoutes.post('/flag', async (c) => {
 
 	// Verify Ed25519 signature
 	try {
-		const nacl = await import('tweetnacl');
 		const signedBlobBytes = Buffer.from(body.signedBlob, 'base64');
 		const signatureBytes = Buffer.from(body.signature, 'base64');
 		const publicKeyBytes = Buffer.from(flagger.publicKey, 'base64');
 
-		const valid = nacl.sign.detached.verify(signedBlobBytes, signatureBytes, publicKeyBytes);
+		const valid = nacl.sign.detached.verify(
+			new Uint8Array(signedBlobBytes),
+			new Uint8Array(signatureBytes),
+			new Uint8Array(publicKeyBytes)
+		);
 		if (!valid) {
 			return c.json({ error: 'Invalid signature' }, 403);
 		}
-	} catch {
-		return c.json({ error: 'Signature verification failed' }, 400);
+	} catch (err) {
+		return c.json({ error: 'Signature verification failed', detail: String(err) }, 400);
 	}
 
 	// Compute independence weight

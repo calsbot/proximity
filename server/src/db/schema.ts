@@ -221,3 +221,14 @@ export const csamHashes = sqliteTable('csam_hashes', {
 	checkedAt: integer('checked_at', { mode: 'timestamp' }),
 	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
 });
+
+// --- Push notification subscriptions ---
+
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+	id: text('id').primaryKey(), // nanoid
+	did: text('did').notNull().references(() => profiles.did),
+	endpoint: text('endpoint').notNull(), // push service URL
+	p256dh: text('p256dh').notNull(), // base64 client public key
+	auth: text('auth').notNull(), // base64 auth secret
+	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
+});

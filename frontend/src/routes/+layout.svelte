@@ -11,6 +11,7 @@
 	import { requestCountStore } from '$lib/stores/requestCount';
 	import { register, getFlagStatus, getDMInvitations, listPendingInvites, listMyAdminJoinRequests } from '$lib/api';
 	import { initChat } from '$lib/services/chat';
+	import { initNotifications, subscribeToPush, pushSupported, pushSubscribed, notificationPermission } from '$lib/services/notifications';
 
 	let throttleLevel = $state<'none' | 'throttled' | 'hidden'>('none');
 
@@ -90,6 +91,13 @@
 		if (id) {
 			// Initialize chat (WS + polling) early so notifications work on all pages
 			await initChat();
+
+			// Register service worker + prompt for push notifications
+			await initNotifications();
+			if ($pushSupported && !$pushSubscribed && $notificationPermission !== 'denied') {
+				// Auto-subscribe — user can disable in settings later
+				subscribeToPush(id.did).catch(() => {});
+			}
 
 			try {
 				const status = await getFlagStatus(id.did);

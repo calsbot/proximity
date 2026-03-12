@@ -9,8 +9,9 @@ import { moderationRoutes } from './routes/moderation';
 import { mediaRoutes } from './routes/media';
 import { newsletterRoutes } from './routes/newsletter';
 import { invitationRoutes } from './routes/invitations';
+import { pushRoutes, sendPushNotification } from './routes/push';
 import { db } from './db';
-import { profiles, groupMembers, groups, media, deliveryTokens, sealedMessages, groupDeliveryTokens } from './db/schema';
+import { profiles, groupMembers, groups, media, deliveryTokens, sealedMessages, groupDeliveryTokens, pushSubscriptions } from './db/schema';
 import { eq, and, lte, or } from 'drizzle-orm';
 
 const app = new Hono();
@@ -43,6 +44,7 @@ app.route('/moderation', moderationRoutes);
 app.route('/media', mediaRoutes);
 app.route('/newsletter', newsletterRoutes);
 app.route('/invitations', invitationRoutes);
+app.route('/push', pushRoutes);
 
 // --- Serve static frontend in production ---
 import { existsSync } from 'fs';
@@ -344,6 +346,19 @@ function initDb() {
 		CREATE INDEX IF NOT EXISTS idx_csam_hashes_media ON csam_hashes(media_id);
 	`);
 
+	// Push notification subscriptions
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id TEXT PRIMARY KEY,
+			did TEXT NOT NULL REFERENCES profiles(did),
+			endpoint TEXT NOT NULL,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_push_subscriptions_did ON push_subscriptions(did);
+	`);
+
 	// Migration: make media.uploader_did nullable (for sealed uploads)
 	// SQLite can't ALTER COLUMN, so recreate the table if it has the NOT NULL constraint
 	try {
@@ -448,6 +463,17 @@ export default {
 					const recipient = wsClients.get(data.recipientDid);
 					if (recipient) {
 						recipient.send(JSON.stringify(data));
+					} else {
+						// Recipient offline — send push notification
+						const senderProfile = senderDid
+							? await db.select({ displayName: profiles.displayName }).from(profiles).where(eq(profiles.did, senderDid)).get()
+							: null;
+						sendPushNotification(data.recipientDid, {
+							title: senderProfile?.displayName ?? 'New message',
+							body: 'You have a new message',
+							tag: `msg-${data.groupId || 'dm'}`,
+							data: { url: data.groupId ? `/chat/${data.groupId}` : '/chat' },
+						}).catch(() => {});
 					}
 				}
 
@@ -470,6 +496,14 @@ export default {
 							ephemeralPublicKey: data.ephemeralPublicKey,
 							nonce: data.nonce,
 						}));
+					} else {
+						// Recipient offline — push notification (can't reveal sender for sealed messages)
+						sendPushNotification(data.recipientDid, {
+							title: 'New message',
+							body: 'You have a new message',
+							tag: 'msg-sealed',
+							data: { url: '/chat' },
+						}).catch(() => {});
 					}
 				}
 			}
