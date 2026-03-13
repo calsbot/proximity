@@ -977,31 +977,10 @@ async function handleIncomingMessage(data: {
 					convo = convos.find(c => c.groupId === data.groupId);
 				}
 			} catch {
-				// Not a group — create as DM
-				const senderProfile = await getProfile(data.senderDid);
-				if (!senderProfile.boxPublicKey) {
-					console.warn('Sender has no boxPublicKey:', data.senderDid);
-					return;
-				}
-
-				const keys = await deriveConversationKeys(
-					state.identity!.boxSecretKey,
-					state.identity!.boxPublicKey,
-					state.identity!.did,
-					decodeBase64(senderProfile.boxPublicKey),
-					data.senderDid
-				);
-
-				getOrCreateConversation(
-					keys.groupId,
-					data.senderDid,
-					senderProfile.displayName,
-					senderProfile.boxPublicKey,
-					keys
-				);
-
-				convos = get(conversationsStore);
-				convo = convos.find(c => c.groupId === data.groupId);
+				// Not a group — DM from unknown sender. Don't auto-create;
+				// the invitation flow handles DM creation on accept.
+				console.log('[chat] Ignoring DM from unknown sender — awaiting invitation acceptance:', data.senderDid.slice(-8));
+				return;
 			}
 
 			if (!convo) {
