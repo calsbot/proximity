@@ -10,6 +10,7 @@
 	import { conversationsStore } from '$lib/stores/conversations';
 	import { requestCountStore } from '$lib/stores/requestCount';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
+	import { formatDistance } from '$lib/utils/distance';
 	import { decryptProfileFields } from '$lib/crypto/profile';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
 
@@ -469,24 +470,27 @@
 					{@const hasReq = hasRequest(profile.did)}
 					{@const presence = getPresence(profile.lastSeen)}
 					{@const url = avatarUrl(profile)}
-					<button class="tile" onclick={() => openChat(profile)}>
-						{#if url}
-							<img src={url} alt={profile.displayName} class="tile-img" loading="lazy" />
-						{:else}
-							<div class="tile-placeholder">
-								<span class="tile-initial">{getInitials(profile.displayName)}</span>
-							</div>
-						{/if}
-
-						{#if presence !== 'away'}
-							<span class="tile-presence-border {presence}"></span>
-						{/if}
-
-						{#if unread > 0}
-							<span class="tile-badge">{unread}</span>
-						{:else if hasReq}
-							<span class="tile-badge request-badge">!</span>
-						{/if}
+					{@const dist = formatDistance(profile.distance)}
+					<button class="cell" onclick={() => openChat(profile)}>
+						<div class="cell-img {presence}">
+							{#if url}
+								<img src={url} alt={profile.displayName} loading="lazy" />
+							{:else}
+								<svg viewBox="0 0 3 4" xmlns="http://www.w3.org/2000/svg" class="cell-spacer"></svg>
+								<div class="cell-placeholder">
+									<span class="cell-initial">{getInitials(profile.displayName)}</span>
+								</div>
+							{/if}
+							{#if unread > 0}
+								<span class="cell-badge">{unread}</span>
+							{:else if hasReq}
+								<span class="cell-badge request-badge">!</span>
+							{/if}
+						</div>
+						<div class="cell-label">
+							<span class="cell-name">{profile.displayName}</span>
+							{#if dist}<span class="cell-dist">{dist}</span>{/if}
+						</div>
 					</button>
 				{/each}
 			</div>
@@ -500,7 +504,6 @@
 		{/if}
 	</div>
 
-	<p class="privacy-hint">distances are approximate</p>
 </div>
 
 <style>
@@ -510,7 +513,8 @@
 	.grid-page.map-mode {
 		display: flex;
 		flex-direction: column;
-		height: calc(100dvh - var(--nav-height) - var(--safe-bottom) - 24px);
+		height: calc(100dvh - max(12px, var(--safe-top)) - var(--nav-height) - var(--safe-bottom));
+		margin-bottom: -24px; /* eat main padding-bottom (16px) + app nav gap (8px) */
 		overflow: hidden;
 	}
 	.grid-page.map-mode .grid-container {
@@ -518,6 +522,11 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+	}
+	.grid-page.map-mode .grid-top {
+		flex-shrink: 0;
+		padding-top: 0;
+		margin-top: 0;
 	}
 	.grid-container {
 		overflow: visible;
@@ -533,8 +542,7 @@
 		margin-top: calc(-1 * max(12px, var(--safe-top)));
 	}
 	.grid-tabs {
-		border-top: none;
-		border-bottom: 1px solid var(--border);
+		border: 1px solid var(--border);
 	}
 	.grid-tabs .tab {
 		min-height: calc(48px - 1px);
@@ -654,65 +662,84 @@
 		text-align: center;
 		line-height: 1.5;
 	}
-	.privacy-hint {
-		color: var(--text-tertiary);
-		font-size: 12px;
-		text-align: center;
-		margin-top: 16px;
-	}
 
-	/* Photo grid */
+	/* Photo grid — Are.na style */
 	.photo-grid {
 		display: grid;
 		grid-template-columns: repeat(3, 1fr);
-		gap: 2px;
+		gap: 10px;
+		padding-top: 10px;
 	}
-	.tile {
-		position: relative;
-		aspect-ratio: 3 / 4;
-		overflow: hidden;
+	.cell {
+		display: flex;
+		flex-direction: column;
 		border: none;
 		border-radius: 0;
 		padding: 0;
 		cursor: pointer;
-		background: var(--bg-surface);
-		transition: opacity 0.1s;
+		background: transparent;
+		text-align: left;
 		min-height: auto;
+		min-width: 0;
 	}
 	@media (hover: hover) {
-		.tile:hover {
+		.cell:hover {
 			opacity: 0.85;
 		}
 	}
-	.tile-img {
+	.cell-img {
+		position: relative;
+		overflow: hidden;
+		background: var(--bg-surface);
+	}
+	.cell-img img {
 		width: 100%;
-		height: 100%;
+		height: auto;
+		aspect-ratio: 3 / 4;
 		object-fit: cover;
 		display: block;
 	}
-	.tile-placeholder {
+	.cell-spacer {
 		width: 100%;
-		height: 100%;
-		background: var(--bg-surface);
+		display: block;
+	}
+	.cell-img.online { border-bottom: 1px solid var(--online); }
+	.cell-img.idle { border-bottom: 1px solid var(--idle); }
+	.cell-placeholder {
+		position: absolute;
+		inset: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.tile-initial {
+	.cell-initial {
 		font-size: 28px;
 		color: var(--text-tertiary);
 		font-weight: 300;
 	}
-	.tile-presence-border {
-		position: absolute;
-		bottom: 0;
-		left: 0;
-		right: 0;
-		height: 2px;
+	.cell-label {
+		padding: 6px 0 0;
+		display: flex;
+		align-items: baseline;
+		gap: 4px;
+		min-width: 0;
 	}
-	.tile-presence-border.online { background: var(--online); }
-	.tile-presence-border.idle { background: var(--idle); }
-	.tile-badge {
+	.cell-name {
+		font-size: 12px;
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.cell-dist {
+		font-size: 11px;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+	.cell-badge {
 		position: absolute;
 		top: 4px;
 		right: 4px;

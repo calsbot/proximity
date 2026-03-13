@@ -236,7 +236,7 @@
 	function makeDotIcon(color: string, opacity: number): L.DivIcon {
 		return L.divIcon({
 			className: 'map-dot-wrapper',
-			html: `<div class="map-dot" style="background:${color}; opacity:${opacity}; border-color:${color};"></div>`,
+			html: `<div class="map-dot" style="background:${color}; opacity:${opacity}; border-color:${color}; box-shadow: 0 0 20px 8px ${color};"></div>`,
 			iconSize: [12, 12],
 			iconAnchor: [6, 6],
 		});
@@ -453,7 +453,7 @@
 			fillColor: 'transparent',
 			fillOpacity: 0,
 			stroke: true,
-			color: '#44ff44',
+			color: '#ffffff',
 			weight: 2,
 			opacity: 1,
 		}).bindTooltip('you', {
@@ -465,7 +465,7 @@
 
 		L.circleMarker([userLat, userLon], {
 			radius: 2,
-			fillColor: '#44ff44',
+			fillColor: '#ffffff',
 			fillOpacity: 1,
 			stroke: false,
 		}).addTo(map);
@@ -629,7 +629,7 @@
 		background: transparent !important;
 		border: none !important;
 		box-shadow: none !important;
-		color: #888 !important;
+		color: #aaa !important;
 		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
 		font-size: 10px !important;
 		padding: 0 !important;
@@ -639,7 +639,7 @@
 		display: none !important;
 	}
 	:global(.map-label-you) {
-		color: #44ff44 !important;
+		color: #ffffff !important;
 		font-size: 9px !important;
 		opacity: 0.8;
 	}
@@ -669,14 +669,14 @@
 		justify-content: center;
 		background: rgba(10, 10, 10, 0.92);
 		border-radius: 50%;
-		border: 1px solid rgba(68, 255, 68, 0.3);
+		border: 1px solid rgba(255, 255, 255, 0.3);
 	}
 
 	:global(.cluster-ring) {
 		position: absolute;
 		inset: 0;
 		border-radius: 50%;
-		border: 1px solid rgba(68, 255, 68, 0.3);
+		border: 1px solid rgba(255, 255, 255, 0.3);
 		animation: radar-ping 3s ease-out infinite;
 		pointer-events: none;
 	}
@@ -693,7 +693,7 @@
 		font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 		font-size: 12px;
 		font-weight: 500;
-		color: rgba(68, 255, 68, 0.8);
+		color: rgba(255, 255, 255, 0.8);
 		letter-spacing: -0.3px;
 	}
 
