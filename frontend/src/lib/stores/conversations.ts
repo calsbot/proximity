@@ -178,7 +178,17 @@ export async function loadConversations(did: string): Promise<void> {
 	try {
 		const db = await getDb();
 		const all = await db.getAll('conversations');
+		// Migrate: existing DMs with messages should have dmAccepted = true
+		// (conversations from before this field was added)
+		let migrated = false;
+		for (const c of all) {
+			if (!c.isGroup && c.dmAccepted === undefined && c.messages.length > 0) {
+				c.dmAccepted = true;
+				migrated = true;
+			}
+		}
 		conversationsStore.set(all);
+		if (migrated) persistConversations(all);
 	} catch {
 		// fresh start
 	}
