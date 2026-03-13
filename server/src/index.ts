@@ -257,25 +257,11 @@ function initDb() {
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN avatar_key TEXT'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN avatar_nonce TEXT'); } catch {}
 
-	// Profile encryption columns
+	// Profile encryption columns (simplified: key stored on profile row, no distribution)
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN encrypted_fields TEXT'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN encrypted_fields_nonce TEXT'); } catch {}
-	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN profile_key_version INTEGER DEFAULT 0'); } catch {}
-
-	// Profile encryption keys table
-	sqliteDb.exec(`
-		CREATE TABLE IF NOT EXISTS profile_keys (
-			id TEXT PRIMARY KEY,
-			owner_did TEXT NOT NULL REFERENCES profiles(did),
-			recipient_did TEXT NOT NULL REFERENCES profiles(did),
-			wrapped_key TEXT NOT NULL,
-			wrapped_key_nonce TEXT NOT NULL,
-			key_version INTEGER NOT NULL DEFAULT 0,
-			created_at INTEGER NOT NULL DEFAULT (unixepoch())
-		);
-		CREATE INDEX IF NOT EXISTS idx_profile_keys_recipient ON profile_keys(recipient_did, owner_did);
-		CREATE INDEX IF NOT EXISTS idx_profile_keys_owner ON profile_keys(owner_did, key_version);
-	`);
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN profile_key TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN tags TEXT'); } catch {}
 
 	// DM invitations table
 	sqliteDb.exec(`

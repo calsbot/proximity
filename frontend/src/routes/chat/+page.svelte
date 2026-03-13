@@ -7,6 +7,7 @@
 	import { listPendingInvites, respondToInvite, createGroup, getDMInvitations, acceptDMInvitation, blockDMInvitation, getProfile, listMyAdminJoinRequests, listMyPendingRequests, respondToJoinRequest } from '$lib/api';
 	import { initChat, startConversation, forcePoll } from '$lib/services/chat';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
+	import ProfileExpandView from '$lib/components/ProfileExpandView.svelte';
 
 	interface DMInvitation {
 		id: string;
@@ -84,6 +85,55 @@
 
 	// Conversation avatar thumbnails for DMs
 	let convoAvatarUrls = $state<Record<string, string | null>>({});
+
+	// Profile expand in request rows
+	let expandedInvDid = $state<string | null>(null);
+	interface InvProfile {
+		displayName: string;
+		bio: string;
+		age: number | null;
+		tags: string[];
+		avatarUrl: string | null;
+	}
+	let invProfiles = $state<Record<string, InvProfile>>({});
+	let loadingInvProfile = $state<string | null>(null);
+
+	async function toggleInvProfile(inv: DMInvitation) {
+		if (expandedInvDid === inv.senderDid) {
+			expandedInvDid = null;
+			return;
+		}
+		expandedInvDid = inv.senderDid;
+		if (invProfiles[inv.senderDid]) return;
+		loadingInvProfile = inv.senderDid;
+		try {
+			const p = await getProfile(inv.senderDid);
+			let bio = p.bio || '';
+			let age = p.age ?? null;
+			let tags: string[] = p.tags ?? [];
+
+			// Decrypt encrypted fields using key from profile row
+			if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
+				try {
+					const { decryptProfileFields } = await import('$lib/crypto/profile');
+					const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+					bio = fields.bio || bio;
+					age = fields.age ?? age;
+					tags = fields.tags || [];
+				} catch {}
+			}
+			let avatarUrl: string | null = invAvatarUrls[inv.senderDid] ?? null;
+			if (!avatarUrl && p.avatarMediaId) {
+				if (p.avatarKey && p.avatarNonce) {
+					avatarUrl = await getDecryptedAvatarUrl(p.avatarMediaId, p.avatarKey, p.avatarNonce) ?? null;
+				} else {
+					avatarUrl = `/media/${p.avatarMediaId}/blob`;
+				}
+			}
+			invProfiles = { ...invProfiles, [inv.senderDid]: { displayName: p.displayName, bio, age, tags, avatarUrl } };
+		} catch {}
+		loadingInvProfile = null;
+	}
 
 	$effect(() => {
 		const did = myDid;
@@ -384,20 +434,44 @@
 		{:else}
 			<!-- DM invitations -->
 			{#each visibleDmInvites as inv}
-				<div class="dm-invite-row">
-					{#if invAvatarUrls[inv.senderDid]}
-						<img src={invAvatarUrls[inv.senderDid]} alt="" class="inv-avatar" />
-					{:else}
-						<div class="inv-avatar-placeholder">
-							<span>{inv.senderDisplayName.charAt(0).toUpperCase()}</span>
+				<div class="dm-invite-row" class:expanded={expandedInvDid === inv.senderDid}>
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div class="dm-invite-top-row" onclick={() => toggleInvProfile(inv)}>
+						{#if invAvatarUrls[inv.senderDid]}
+							<img src={invAvatarUrls[inv.senderDid]} alt="" class="inv-avatar" />
+						{:else}
+							<div class="inv-avatar-placeholder">
+								<span>{inv.senderDisplayName.charAt(0).toUpperCase()}</span>
+							</div>
+						{/if}
+						<div class="dm-invite-content">
+							<span class="name">
+								{inv.senderDisplayName}{#if invAges[inv.senderDid]}, {invAges[inv.senderDid]}{/if}
+							</span>
+							<span class="preview">sent you a message &middot; {timeAgo(inv.createdAt)}</span>
+						</div>
+					</div>
+					{#if expandedInvDid === inv.senderDid}
+						<div class="dm-invite-expanded">
+							{#if loadingInvProfile === inv.senderDid}
+								<span class="card-loading">loading...</span>
+							{:else if invProfiles[inv.senderDid]}
+								<!-- svelte-ignore a11y_click_events_have_key_events -->
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<div class="profile-expand-tap" onclick={() => { expandedInvDid = null; }}>
+									<ProfileExpandView
+										displayName={invProfiles[inv.senderDid].displayName}
+										age={invProfiles[inv.senderDid].age}
+										bio={invProfiles[inv.senderDid].bio}
+										tags={invProfiles[inv.senderDid].tags}
+										avatarUrl={invProfiles[inv.senderDid].avatarUrl}
+										compact={true}
+									/>
+								</div>
+							{/if}
 						</div>
 					{/if}
-					<div class="dm-invite-content">
-						<span class="name">
-							{inv.senderDisplayName}{#if invAges[inv.senderDid]}, {invAges[inv.senderDid]}{/if}
-						</span>
-						<span class="preview">sent you a message &middot; {timeAgo(inv.createdAt)}</span>
-					</div>
 					<div class="invite-actions">
 						<button class="small" onclick={() => handleDmAccept(inv)}>accept</button>
 						<button class="small muted" onclick={() => handleDmIgnore(inv.id)}>ignore</button>
@@ -754,6 +828,26 @@
 		padding: 14px 16px;
 		min-height: 48px;
 		border-bottom: 1px solid var(--border);
+	}
+	.dm-invite-row.expanded {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.dm-invite-top-row {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		cursor: pointer;
+	}
+	.dm-invite-expanded {
+		padding: 12px 0 8px;
+	}
+	.profile-expand-tap {
+		cursor: pointer;
+	}
+	.card-loading {
+		font-size: 13px;
+		color: var(--text-muted);
 	}
 	.dm-invite-row:last-of-type {
 		border-bottom: none;

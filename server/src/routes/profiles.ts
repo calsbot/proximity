@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { profiles, blocks, profileKeys, flagThrottles } from '../db/schema';
+import { profiles, blocks, flagThrottles } from '../db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 
@@ -52,26 +52,13 @@ profileRoutes.get('/discover', async (c) => {
 		avatarNonce: profiles.avatarNonce,
 		instagram: profiles.instagram,
 		profileLink: profiles.profileLink,
+		tags: profiles.tags,
+		profileKey: profiles.profileKey,
 		encryptedFields: profiles.encryptedFields,
 		encryptedFieldsNonce: profiles.encryptedFieldsNonce,
-		profileKeyVersion: profiles.profileKeyVersion,
 		geohashCells: profiles.geohashCells,
 		lastSeen: profiles.lastSeen
 	}).from(profiles).all();
-
-	// Fetch wrapped profile keys for the requester (so they can decrypt encrypted fields)
-	let profileKeyMap = new Map<string, { wrappedKey: string; wrappedKeyNonce: string; keyVersion: number; ownerBoxPublicKey?: string }>();
-	if (requesterDid) {
-		const wrappedKeys = await db.select({
-			ownerDid: profileKeys.ownerDid,
-			wrappedKey: profileKeys.wrappedKey,
-			wrappedKeyNonce: profileKeys.wrappedKeyNonce,
-			keyVersion: profileKeys.keyVersion,
-		}).from(profileKeys).where(eq(profileKeys.recipientDid, requesterDid)).all();
-		for (const wk of wrappedKeys) {
-			profileKeyMap.set(wk.ownerDid, wk);
-		}
-	}
 
 	// Get hidden profiles (flagged with level = 'hidden')
 	const hiddenProfiles = await db.select({ did: flagThrottles.did })
@@ -102,7 +89,6 @@ profileRoutes.get('/discover', async (c) => {
 	const results = matching.map(p => {
 		const profileCells: string[] = JSON.parse(p.geohashCells!);
 		const matchedCell = profileCells.find(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc))) ?? profileCells[0];
-		const wrappedKey = profileKeyMap.get(p.did);
 		return {
 			did: p.did,
 			displayName: p.displayName,
@@ -114,12 +100,10 @@ profileRoutes.get('/discover', async (c) => {
 			avatarNonce: p.avatarNonce,
 			instagram: p.instagram,
 			profileLink: p.profileLink,
+			tags: p.tags ? JSON.parse(p.tags) : [],
+			profileKey: p.profileKey,
 			encryptedFields: p.encryptedFields,
 			encryptedFieldsNonce: p.encryptedFieldsNonce,
-			profileKeyVersion: p.profileKeyVersion,
-			wrappedProfileKey: wrappedKey?.wrappedKey ?? null,
-			wrappedProfileKeyNonce: wrappedKey?.wrappedKeyNonce ?? null,
-			wrappedProfileKeyVersion: wrappedKey?.keyVersion ?? null,
 			geohashCell: matchedCell,
 			lastSeen: p.lastSeen
 		};
@@ -180,7 +164,11 @@ profileRoutes.get('/:did', async (c) => {
 		return c.json({ error: 'Profile not found' }, 404);
 	}
 
-	return c.json(profile);
+	// Parse tags from JSON string for the response
+	return c.json({
+		...profile,
+		tags: profile.tags ? JSON.parse(profile.tags) : [],
+	});
 });
 
 /**
@@ -192,6 +180,7 @@ profileRoutes.put('/:did', async (c) => {
 		displayName?: string;
 		bio?: string;
 		age?: number;
+		tags?: string[];
 		signedProfileBlob?: string;
 		geohashCells?: string[];
 		avatarMediaId?: string;
@@ -199,9 +188,9 @@ profileRoutes.put('/:did', async (c) => {
 		avatarNonce?: string;
 		instagram?: string;
 		profileLink?: string;
+		profileKey?: string;
 		encryptedFields?: string;
 		encryptedFieldsNonce?: string;
-		profileKeyVersion?: number;
 	}>();
 
 	if (body.age !== undefined && body.age !== null && body.age < 18) {
@@ -212,6 +201,7 @@ profileRoutes.put('/:did', async (c) => {
 		...(body.displayName && { displayName: body.displayName }),
 		...(body.bio !== undefined && { bio: body.bio }),
 		...(body.age !== undefined && { age: body.age }),
+		...(body.tags !== undefined && { tags: JSON.stringify(body.tags) }),
 		...(body.signedProfileBlob && { signedProfileBlob: body.signedProfileBlob }),
 		...(body.geohashCells && { geohashCells: JSON.stringify(body.geohashCells) }),
 		...(body.avatarMediaId && { avatarMediaId: body.avatarMediaId }),
@@ -219,79 +209,12 @@ profileRoutes.put('/:did', async (c) => {
 		...(body.avatarNonce !== undefined && { avatarNonce: body.avatarNonce }),
 		...(body.instagram !== undefined && { instagram: body.instagram }),
 		...(body.profileLink !== undefined && { profileLink: body.profileLink }),
+		...(body.profileKey !== undefined && { profileKey: body.profileKey }),
 		...(body.encryptedFields !== undefined && { encryptedFields: body.encryptedFields }),
 		...(body.encryptedFieldsNonce !== undefined && { encryptedFieldsNonce: body.encryptedFieldsNonce }),
-		...(body.profileKeyVersion !== undefined && { profileKeyVersion: body.profileKeyVersion }),
 		lastSeen: new Date()
 	}).where(eq(profiles.did, did));
 
-	return c.json({ ok: true });
-});
-
-/**
- * POST /profiles/keys
- * Bulk store wrapped profile keys for recipients.
- */
-profileRoutes.post('/keys', async (c) => {
-	const body = await c.req.json<{
-		ownerDid: string;
-		keys: Array<{ recipientDid: string; wrappedKey: string; wrappedKeyNonce: string; keyVersion: number }>;
-	}>();
-
-	if (!body.ownerDid || !body.keys?.length) {
-		return c.json({ error: 'ownerDid and keys required' }, 400);
-	}
-
-	for (const k of body.keys) {
-		// Upsert: delete old key for same owner+recipient, insert new one
-		await db.delete(profileKeys).where(
-			and(eq(profileKeys.ownerDid, body.ownerDid), eq(profileKeys.recipientDid, k.recipientDid))
-		);
-		await db.insert(profileKeys).values({
-			id: nanoid(),
-			ownerDid: body.ownerDid,
-			recipientDid: k.recipientDid,
-			wrappedKey: k.wrappedKey,
-			wrappedKeyNonce: k.wrappedKeyNonce,
-			keyVersion: k.keyVersion,
-		});
-	}
-
-	return c.json({ ok: true });
-});
-
-/**
- * GET /profiles/keys?recipientDid=...
- * Get all profile keys wrapped for a recipient.
- */
-profileRoutes.get('/keys', async (c) => {
-	const recipientDid = c.req.query('recipientDid');
-	if (!recipientDid) {
-		return c.json({ error: 'recipientDid required' }, 400);
-	}
-
-	const keys = await db.select({
-		ownerDid: profileKeys.ownerDid,
-		wrappedKey: profileKeys.wrappedKey,
-		wrappedKeyNonce: profileKeys.wrappedKeyNonce,
-		keyVersion: profileKeys.keyVersion,
-	}).from(profileKeys).where(eq(profileKeys.recipientDid, recipientDid)).all();
-
-	return c.json(keys);
-});
-
-/**
- * DELETE /profiles/keys — revoke profile keys shared with a specific recipient.
- * Body: { ownerDid, recipientDid }
- */
-profileRoutes.delete('/keys', async (c) => {
-	const { ownerDid, recipientDid } = await c.req.json<{ ownerDid: string; recipientDid: string }>();
-	if (!ownerDid || !recipientDid) {
-		return c.json({ error: 'ownerDid and recipientDid required' }, 400);
-	}
-	await db.delete(profileKeys).where(
-		and(eq(profileKeys.ownerDid, ownerDid), eq(profileKeys.recipientDid, recipientDid))
-	);
 	return c.json({ ok: true });
 });
 
@@ -309,7 +232,6 @@ profileRoutes.delete('/:did', async (c) => {
 	sqliteDb.exec(`DELETE FROM reports WHERE reporter_did = '${did.replace(/'/g, "''")}' OR reported_did = '${did.replace(/'/g, "''")}'`);
 	sqliteDb.exec(`DELETE FROM encrypted_messages WHERE sender_did = '${did.replace(/'/g, "''")}' OR recipient_did = '${did.replace(/'/g, "''")}'`);
 	sqliteDb.exec(`DELETE FROM key_packages WHERE did = '${did.replace(/'/g, "''")}'`);
-	sqliteDb.exec(`DELETE FROM profile_keys WHERE owner_did = '${did.replace(/'/g, "''")}' OR recipient_did = '${did.replace(/'/g, "''")}'`);
 	await db.delete(profiles).where(eq(profiles.did, did));
 	return c.json({ ok: true });
 });

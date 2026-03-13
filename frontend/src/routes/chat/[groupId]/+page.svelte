@@ -3,16 +3,15 @@
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
 	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, markConversationPeerLeft, unmarkConversationPeerLeft, diffGroupMembers, addMessage, muteConversation, unmuteConversation, resetSealedSender } from '$lib/stores/conversations';
-	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapSenderKeys, distributeMySenderKey, rotateGroupKey, handleMediaViewed, startConversation } from '$lib/services/chat';
-	import { getGroup, getProfile, leaveGroup, kickMember, transferAdmin, inviteToGroup, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest, acceptDMInvitation, declineDMInvitation, getDMInvitations, submitFlag, revokeProfileKey, leaveDM, getDMStatus, sendDMInvitation } from '$lib/api';
+	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapSenderKeys, distributeMySenderKey, rotateGroupKey, handleMediaViewed, startConversation, getConversationId } from '$lib/services/chat';
+	import { getGroup, getProfile, leaveGroup, kickMember, transferAdmin, inviteToGroup, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest, acceptDMInvitation, declineDMInvitation, getDMInvitations, submitFlag, leaveDM, getDMStatus, sendDMInvitation } from '$lib/api';
 	import { goto } from '$app/navigation';
 	import { randomHex, sha256Hex } from '$lib/crypto/util';
 	import { createSignedFlag, type FlagPayload } from '$lib/crypto/moderation';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
 	import { decryptProfileFields } from '$lib/crypto/profile';
-	import { unwrapProfileKey } from '$lib/crypto/profile';
-	import { rotateMyProfileKey, invalidateProfileKey } from '$lib/stores/profileKeys';
 	import { locationStore, requestLocation } from '$lib/stores/location';
+	import ProfileExpandView from '$lib/components/ProfileExpandView.svelte';
 	import { center as geohashCenter, distanceMeters } from '$lib/geo/geohash';
 	import MediaViewer from '$lib/components/MediaViewer.svelte';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
@@ -103,8 +102,19 @@
 		age: number | null;
 		tags: string[];
 		avatarUrl: string | null;
+		geohashCell: string | null;
 	}
 	let peerProfile = $state<PeerProfile | null>(null);
+	let peerGroupsInCommon = $state(0);
+
+	// Compute distance from user's location to peer's geohash
+	let peerDistance = $derived.by(() => {
+		const loc = $locationStore;
+		const cell = peerProfile?.geohashCell;
+		if (!loc.lat || !loc.lon || !cell) return null;
+		const c = geohashCenter(cell);
+		return distanceMeters(loc.lat, loc.lon, c.lat, c.lon);
+	});
 
 	let groupId = $derived(page.params.groupId);
 	let convo = $derived($conversationsStore.find(c => c.groupId === groupId));
@@ -131,11 +141,19 @@
 		})() : null
 	);
 
+	// Track where user came from for back navigation
+	let navFrom = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('from') : null;
+
 	// Pending incoming DM invitation — show accept/decline instead of composer
 	let pendingIncomingInvite = $state<{id: string; senderDid: string; senderDisplayName: string; senderBoxPublicKey: string | null} | null>(null);
 
 	// Outgoing invitation sent — block further messages until accepted
 	let outgoingInviteSent = $state(false);
+
+	// Profile expand view states
+	let showingProfile = $state(false);
+	let viewingMemberDid = $state<string | null>(null);
+	let memberAvatarUrls = $state<Record<string, string | null>>({});
 
 	$effect(() => {
 		const did = myDid;
@@ -219,32 +237,18 @@
 		if (!peerDid || peerProfile) return;
 		(async () => {
 			try {
-				const identity = $identityStore.identity;
 				const p = await getProfile(peerDid);
 				let bio = p.bio || '';
 				let age = p.age ?? null;
-				let tags: string[] = [];
+				let tags: string[] = p.tags ?? [];
 
-				// Try to decrypt encrypted fields
-				if (p.encryptedFields && p.encryptedFieldsNonce && identity) {
+				// Decrypt encrypted fields using key from profile row
+				if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
 					try {
-						const { getProfileKeysForMe } = await import('$lib/api');
-						const { decodeBase64 } = await import('$lib/crypto/util');
-						const keys = await getProfileKeysForMe(did);
-						const match = keys.find((k: any) => k.ownerDid === peerDid);
-						if (match && p.boxPublicKey) {
-							const senderPub = decodeBase64(p.boxPublicKey);
-							const decryptedKey = unwrapProfileKey(
-								match.wrappedKey,
-								match.wrappedKeyNonce,
-								senderPub,
-								identity.boxSecretKey
-							);
-							const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, decryptedKey);
-							bio = fields.bio || bio;
-							age = fields.age ?? age;
-							tags = fields.tags || [];
-						}
+						const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+						bio = fields.bio || bio;
+						age = fields.age ?? age;
+						tags = fields.tags || [];
 					} catch {}
 				}
 
@@ -258,7 +262,18 @@
 					}
 				}
 
-				peerProfile = { displayName: p.displayName, bio, age, tags, avatarUrl };
+				const firstCell = p.geohashCells ? p.geohashCells.split(',')[0] || null : null;
+				peerProfile = { displayName: p.displayName, bio, age, tags, avatarUrl, geohashCell: firstCell };
+
+				// Count shared groups
+				try {
+					const { listGroups } = await import('$lib/api');
+					const myGroupsList = await listGroups(did);
+					const peerDids = new Set(myGroupsList.flatMap(g => g.members.map(m => m.did)));
+					if (peerDids.has(peerDid!)) {
+						peerGroupsInCommon = myGroupsList.filter(g => g.members.some(m => m.did === peerDid)).length;
+					}
+				} catch {}
 			} catch {}
 		})();
 	});
@@ -323,6 +338,29 @@
 				}
 			} catch {}
 		})();
+	});
+
+	// Load member avatars when members tab is active
+	$effect(() => {
+		if (activeTab !== 'members' || !isGroupChat) return;
+		for (const member of groupMembers) {
+			if (memberAvatarUrls[member.did] !== undefined) continue;
+			memberAvatarUrls[member.did] = null;
+			(async () => {
+				try {
+					const p = await getProfile(member.did);
+					let url: string | null = null;
+					if (p.avatarMediaId && p.avatarKey && p.avatarNonce) {
+						url = await getDecryptedAvatarUrl(p.avatarMediaId, p.avatarKey, p.avatarNonce) ?? null;
+					} else if (p.avatarMediaId) {
+						url = `${import.meta.env.VITE_API_URL || ''}/media/${p.avatarMediaId}/blob`;
+					}
+					memberAvatarUrls = { ...memberAvatarUrls, [member.did]: url };
+				} catch {
+					memberAvatarUrls = { ...memberAvatarUrls, [member.did]: null };
+				}
+			})();
+		}
 	});
 
 	// Auto-scroll on new messages or pending message
@@ -792,26 +830,18 @@
 		if (memberProfiles[memberDid]) return;
 		loadingMemberProfile = memberDid;
 		try {
-			const identity = $identityStore.identity;
 			const p = await getProfile(memberDid);
 			let bio = p.bio || '';
 			let age = p.age ?? null;
-			let tags: string[] = [];
-			// Try to decrypt encrypted fields
-			if (p.encryptedFields && p.encryptedFieldsNonce && identity) {
+			let tags: string[] = p.tags ?? [];
+
+			// Decrypt encrypted fields using key from profile row
+			if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
 				try {
-					const { getProfileKeysForMe } = await import('$lib/api');
-					const { decodeBase64 } = await import('$lib/crypto/util');
-					const keys = await getProfileKeysForMe(identity.did);
-					const match = keys.find((k: any) => k.ownerDid === memberDid);
-					if (match && p.boxPublicKey) {
-						const senderPub = decodeBase64(p.boxPublicKey);
-						const decryptedKey = unwrapProfileKey(match.wrappedKey, match.wrappedKeyNonce, senderPub, identity.boxSecretKey);
-						const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, decryptedKey);
-						bio = fields.bio || bio;
-						age = fields.age ?? age;
-						tags = fields.tags || [];
-					}
+					const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+					bio = fields.bio || bio;
+					age = fields.age ?? age;
+					tags = fields.tags || [];
 				} catch {}
 			}
 			let avatarUrl: string | null = null;
@@ -822,29 +852,36 @@
 					avatarUrl = `/media/${p.avatarMediaId}/blob`;
 				}
 			}
-			memberProfiles = { ...memberProfiles, [memberDid]: { did: memberDid, displayName: p.displayName, bio, age, tags, avatarUrl, boxPublicKey: p.boxPublicKey ?? null } };
+			const memberCell = p.geohashCells ? p.geohashCells.split(',')[0] || null : null;
+			memberProfiles = { ...memberProfiles, [memberDid]: { did: memberDid, displayName: p.displayName, bio, age, tags, avatarUrl, boxPublicKey: p.boxPublicKey ?? null, geohashCell: memberCell } };
 		} catch {}
 		loadingMemberProfile = null;
 	}
 
-	function handleDmFromGroup(memberDid: string) {
+	async function handleDmFromGroup(memberDid: string) {
 		const mp = memberProfiles[memberDid];
-		if (!mp) return;
-		// Check if we already have a conversation with this person
-		const existing = $conversationsStore.find(c => !c.isGroup && c.peerDid === memberDid);
-		if (existing) {
-			goto(`/chat/${existing.groupId}`);
-		} else if (mp.boxPublicKey) {
-			// Navigate with pending peer params to start a new DM
-			const params = new URLSearchParams({
-				peerDid: memberDid,
-				peerName: mp.displayName,
-				peerKey: mp.boxPublicKey
-			});
-			// Create deterministic groupId for DM
-			const sortedDids = [myDid!, memberDid].sort();
-			const dmGroupId = `dm-${sortedDids[0].slice(-8)}-${sortedDids[1].slice(-8)}`;
-			goto(`/chat/${dmGroupId}?${params.toString()}`);
+		if (!mp?.boxPublicKey) {
+			console.error('[dm-from-group] No boxPublicKey for member', memberDid, mp);
+			return;
+		}
+		try {
+			// Check if we already have a conversation with this person
+			const existing = $conversationsStore.find(c => !c.isGroup && c.peerDid === memberDid);
+			if (existing) {
+				// Force full navigation — SvelteKit reuses [groupId] component and loaded flag prevents re-init
+				window.location.href = `/chat/${existing.groupId}?from=chat`;
+			} else {
+				const dmGroupId = await getConversationId(memberDid, mp.boxPublicKey);
+				const params = new URLSearchParams({
+					peerDid: memberDid,
+					peerName: mp.displayName,
+					peerKey: mp.boxPublicKey,
+					from: 'chat'
+				});
+				window.location.href = `/chat/${dmGroupId}?${params.toString()}`;
+			}
+		} catch (e) {
+			console.error('[dm-from-group] Failed:', e);
 		}
 	}
 
@@ -1022,7 +1059,11 @@
 	<div class="card">
 		<div class="card-header">
 			<div class="header-top">
-				<button class="back" onclick={() => goto('/chat')}>&larr;</button>
+				<button class="back" onclick={() => {
+					if (showingProfile) { showingProfile = false; }
+					else if (viewingMemberDid) { viewingMemberDid = null; }
+					else { goto(navFrom === 'grid' ? '/grid' : '/chat'); }
+				}}>&larr;</button>
 				<span class="title">{convo?.peerName ?? pendingPeer?.name ?? 'conversation'}</span>
 				{#if isMuted}<span class="header-tag">muted</span>{/if}
 				{#if hasLeft && !isGroupChat}<span class="header-tag left-header-tag">left</span>{/if}
@@ -1034,7 +1075,7 @@
 							<div class="chat-dropdown">
 								{#if !showReportSubmenu}
 									<button class="menu-item" onclick={() => { showChatMenu = false; if (isMuted) { unmuteConversation(groupId); } else { muteConversation(groupId); } }}>{isMuted ? 'unmute' : 'mute'}</button>
-									<button class="menu-item" onclick={async () => { showChatMenu = false; if (myDid && convo?.peerDid) { leaveDM(groupId, myDid).catch(() => {}); revokeProfileKey(myDid, convo.peerDid).catch(() => {}); revokeProfileKey(convo.peerDid, myDid).catch(() => {}); invalidateProfileKey(convo.peerDid).catch(() => {}); rotateMyProfileKey().catch(() => {}); } markConversationLeft(groupId); }}>leave chat</button>
+									<button class="menu-item" onclick={async () => { showChatMenu = false; if (myDid) { leaveDM(groupId, myDid).catch(() => {}); } markConversationLeft(groupId); }}>leave chat</button>
 									<button class="menu-item" onclick={() => { showReportSubmenu = true; }}>report &rarr;</button>
 								{:else}
 									<button class="menu-item" onclick={() => { showReportSubmenu = false; }}>&larr; back</button>
@@ -1061,59 +1102,61 @@
 		</div>
 		{#if activeTab === 'members' && isGroupChat && !hasLeft}
 			<div class="members-panel">
+				{#if viewingMemberDid && (memberProfiles[viewingMemberDid] || loadingMemberProfile === viewingMemberDid)}
+					{#if loadingMemberProfile === viewingMemberDid}
+						<span class="card-loading">loading...</span>
+					{:else if memberProfiles[viewingMemberDid]}
+						{@const mp = memberProfiles[viewingMemberDid]}
+						{@const loc = $locationStore}
+						{@const memberDist = (loc.lat && loc.lon && mp.geohashCell) ? distanceMeters(loc.lat, loc.lon, geohashCenter(mp.geohashCell).lat, geohashCenter(mp.geohashCell).lon) : null}
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="profile-expand-tap" onclick={() => { viewingMemberDid = null; }}>
+							<ProfileExpandView
+								displayName={mp.displayName}
+								age={mp.age}
+								bio={mp.bio}
+								tags={mp.tags}
+								avatarUrl={mp.avatarUrl}
+								distance={memberDist}
+								groupsInCommon={1}
+								expanded={true}
+							/>
+						</div>
+						<div class="card-actions">
+							<button class="small" onclick={() => handleDmFromGroup(viewingMemberDid!)}>message</button>
+							{#if isAdmin && viewingMemberDid !== myDid}
+								{@const viewedMember = groupMembers.find(m => m.did === viewingMemberDid)}
+								{#if viewedMember && viewedMember.role !== 'admin'}
+									<button class="small" onclick={() => handleTransferAdmin(viewingMemberDid!)}>make admin</button>
+								{/if}
+								<button class="small muted" onclick={() => handleKick(viewingMemberDid!)}>remove</button>
+							{/if}
+						</div>
+					{/if}
+				{:else}
 				{#if pickingNewAdmin}
 					<p class="admin-pick-prompt">pick a new admin before leaving</p>
 				{/if}
 				{#each groupMembers as member}
-					<button class="member-row" onclick={() => member.did !== myDid && !pickingNewAdmin && toggleMemberProfile(member.did)}>
+					<button class="member-row" onclick={() => {
+						if (member.did === myDid || pickingNewAdmin) return;
+						viewingMemberDid = member.did;
+						if (!memberProfiles[member.did]) toggleMemberProfile(member.did);
+					}}>
+						{#if memberAvatarUrls[member.did]}
+							<img src={memberAvatarUrls[member.did]} alt="" class="member-row-avatar" />
+						{:else}
+							<div class="member-row-avatar-placeholder">
+								<span>{member.displayName.charAt(0).toUpperCase()}</span>
+							</div>
+						{/if}
 						<span class="member-name">{member.displayName}</span>
 						<span class="member-role">{member.role ?? 'member'}</span>
 						{#if pickingNewAdmin && member.did !== myDid}
 							<button class="small pick-admin-btn" onclick={(e) => { e.stopPropagation(); handleTransferAndLeave(member.did); }}>make admin & leave</button>
-						{:else if member.did !== myDid}
-							<span class="expand-arrow">{expandedMember === member.did ? '▾' : '›'}</span>
 						{/if}
 					</button>
-					{#if expandedMember === member.did}
-						<div class="member-card">
-							{#if loadingMemberProfile === member.did}
-								<span class="card-loading">loading...</span>
-							{:else if memberProfiles[member.did]}
-								{@const mp = memberProfiles[member.did]}
-								<div class="card-top">
-									{#if mp.avatarUrl}
-										<img src={mp.avatarUrl} alt="" class="card-avatar" />
-									{:else}
-										<div class="card-avatar-placeholder">
-											<span>{mp.displayName.charAt(0).toUpperCase()}</span>
-										</div>
-									{/if}
-									<div class="card-info">
-										<span class="card-name">{mp.displayName}{#if mp.age}, {mp.age}{/if}</span>
-										{#if mp.bio}
-											<span class="card-bio">{mp.bio}</span>
-										{/if}
-										{#if mp.tags.length > 0}
-											<div class="card-tags">
-												{#each mp.tags as tag}
-													<span class="profile-tag">{tag}</span>
-												{/each}
-											</div>
-										{/if}
-									</div>
-								</div>
-								<div class="card-actions">
-									<button class="small" onclick={() => handleDmFromGroup(member.did)}>message</button>
-									{#if isAdmin && member.did !== myDid}
-										{#if member.role !== 'admin'}
-											<button class="small" onclick={() => handleTransferAdmin(member.did)}>make admin</button>
-										{/if}
-										<button class="small muted" onclick={() => handleKick(member.did)}>remove</button>
-									{/if}
-								</div>
-							{/if}
-						</div>
-					{/if}
 				{/each}
 
 				{#if isAdmin}
@@ -1187,6 +1230,7 @@
 				{:else}
 					<button class="small muted leave-btn" onclick={handleLeave}>leave group</button>
 				{/if}
+				{/if}
 			</div>
 		{/if}
 
@@ -1208,14 +1252,33 @@
 			</div>
 		{/if}
 
-		{#if activeTab === 'chat' || !isGroupChat}
+		{#if (activeTab === 'chat' || !isGroupChat) && showingProfile && peerProfile && !isGroupChat}
+			<div class="card-body profile-view-body">
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="profile-expand-tap" onclick={() => { showingProfile = false; }}>
+					<ProfileExpandView
+						displayName={peerProfile.displayName}
+						age={peerProfile.age}
+						bio={peerProfile.bio}
+						tags={peerProfile.tags}
+						avatarUrl={peerProfile.avatarUrl}
+						distance={peerDistance}
+						groupsInCommon={peerGroupsInCommon}
+						expanded={true}
+					/>
+				</div>
+			</div>
+		{:else if activeTab === 'chat' || !isGroupChat}
 			<div class="card-body" bind:this={messagesEl}>
 				<div class="messages">
 					{#if !convo && !pendingPeer}
 						<p class="empty">conversation not found.</p>
 					{:else}
 						{#if !isGroupChat && peerProfile}
-							<div class="profile-header">
+							<!-- svelte-ignore a11y_click_events_have_key_events -->
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div class="profile-header" onclick={() => { showingProfile = true; }} style="cursor:pointer">
 								{#if peerProfile.avatarUrl}
 									<img src={peerProfile.avatarUrl} alt="" class="profile-avatar" />
 								{:else}
@@ -1345,7 +1408,7 @@
 			<span class="invite-sent-title">request sent</span>
 			<span class="left-text">you can send more messages after your request has been accepted.</span>
 		</div>
-	{:else if activeTab === 'chat' || !isGroupChat}
+	{:else if (activeTab === 'chat' || !isGroupChat) && !showingProfile}
 		{#if attachError}
 			<div class="attach-error">{attachError}</div>
 		{/if}
@@ -1406,6 +1469,37 @@
 		position: relative;
 		min-height: 48px;
 		border-bottom: 1px solid var(--border);
+	}
+	.profile-expand-tap {
+		cursor: pointer;
+	}
+	/* Profile view body */
+	.profile-view-body {
+		overflow-y: auto;
+		padding: 16px;
+	}
+	/* Member row avatars */
+	.member-row-avatar {
+		width: 44px;
+		height: 44px;
+		border-radius: 2px;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+	.member-row-avatar-placeholder {
+		width: 44px;
+		height: 44px;
+		border-radius: 2px;
+		background: var(--bg-surface);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+	.member-row-avatar-placeholder span {
+		font-size: 18px;
+		color: var(--text-tertiary);
+		font-weight: 300;
 	}
 	.back {
 		border: none;
@@ -1492,9 +1586,13 @@
 	}
 	.profile-tags {
 		display: flex;
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
 		gap: 4px;
-		margin-top: 2px;
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+	.profile-tags::-webkit-scrollbar {
+		display: none;
 	}
 	.profile-tag {
 		font-size: 11px;
@@ -1502,6 +1600,8 @@
 		border: 1px solid var(--border);
 		padding: 2px 8px;
 		line-height: 1.3;
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 	/* Message area */
 	.card-body {
@@ -1637,67 +1737,9 @@
 		padding: 2px 6px;
 		border-radius: var(--radius);
 	}
-	.expand-arrow {
-		margin-left: auto;
-		color: var(--text-muted);
-		font-size: 12px;
-	}
-	/* Expanded member card */
-	.member-card {
-		padding: 12px 0 16px;
-		border-bottom: 1px solid var(--border);
-	}
 	.card-loading {
 		font-size: 13px;
 		color: var(--text-muted);
-	}
-	.card-top {
-		display: flex;
-		gap: 12px;
-	}
-	.card-avatar {
-		width: 56px;
-		height: 56px;
-		border-radius: 2px;
-		object-fit: cover;
-		flex-shrink: 0;
-	}
-	.card-avatar-placeholder {
-		width: 56px;
-		height: 56px;
-		border-radius: 2px;
-		background: var(--bg-surface);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-	}
-	.card-avatar-placeholder span {
-		font-size: 22px;
-		color: var(--text-tertiary);
-		font-weight: 300;
-	}
-	.card-info {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-	}
-	.card-name {
-		font-size: 14px;
-		color: var(--text);
-		font-weight: 500;
-	}
-	.card-bio {
-		font-size: 13px;
-		color: var(--text-muted);
-		line-height: 1.4;
-	}
-	.card-tags {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 4px;
-		margin-top: 2px;
 	}
 	.card-actions {
 		display: flex;

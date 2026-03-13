@@ -5,15 +5,12 @@
 	import { locationStore, hasLocation, requestLocation } from '$lib/stores/location';
 	import { identityStore } from '$lib/stores/identity';
 	import { distanceMeters, center, neighbors, encode, generateDecoyCells } from '$lib/geo/geohash';
-	import { discoverProfiles, updateProfile, listGroups, storeProfileKeys, getDMInvitations, listPendingInvites, BASE } from '$lib/api';
+	import { discoverProfiles, updateProfile, listGroups, getDMInvitations, listPendingInvites, BASE } from '$lib/api';
 	import { getConversationId, initChat } from '$lib/services/chat';
 	import { conversationsStore } from '$lib/stores/conversations';
 	import { requestCountStore } from '$lib/stores/requestCount';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
-	import { getCachedProfileKey, cacheProfileKey, getMyProfileKey } from '$lib/stores/profileKeys';
-	import { decryptProfileFields, wrapProfileKey } from '$lib/crypto/profile';
-	import { decodeBase64 } from '$lib/crypto/util';
-	import { unwrapKey } from '$lib/crypto/media';
+	import { decryptProfileFields } from '$lib/crypto/profile';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
 
 	let viewMode = $state<'grid' | 'map'>('grid');
@@ -47,7 +44,10 @@
 	let loading = $state(false);
 	let locationError = $state(false);
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
-	let activeFilter = $state<string>('all');
+	// Filter state
+	let tagSearch = $state('');
+	let selectedGroups = $state<Set<string>>(new Set());
+	let showFilter = $state(false);
 
 	// Pending request sender DIDs (for grid badge)
 	let requestSenderDids = $state<Set<string>>(new Set());
@@ -64,14 +64,24 @@
 	// Check if we already have location from the store
 	let hasLoc = $derived($locationStore.geohash !== null);
 
-	// Filtered + sorted profiles based on active filter
+	// Filtered + sorted profiles based on active filters
 	let sortedProfiles = $derived.by(() => {
 		let list = allProfiles;
-		if (activeFilter !== 'all') {
-			list = list.filter(p => p.sharedGroups.some(g => g.id === activeFilter));
+		// Tag filter
+		if (tagSearch.trim()) {
+			const q = tagSearch.trim().toLowerCase();
+			list = list.filter(p => p.tags?.some(t => t.toLowerCase().includes(q)));
+		}
+		// Group filter (OR: in any selected group)
+		if (selectedGroups.size > 0) {
+			list = list.filter(p => p.sharedGroups.some(g => selectedGroups.has(g.id)));
 		}
 		return [...list].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
 	});
+
+	let activeFilterCount = $derived(
+		(tagSearch.trim() ? 1 : 0) + selectedGroups.size
+	);
 
 	// Only show visibleCount profiles (for infinite scroll)
 	let profiles = $derived(sortedProfiles.slice(0, visibleCount));
@@ -79,7 +89,8 @@
 
 	// Reset visible count when filter changes
 	$effect(() => {
-		activeFilter;
+		tagSearch;
+		selectedGroups;
 		visibleCount = BATCH_SIZE;
 	});
 
@@ -236,51 +247,24 @@
 		try {
 			const data = await discoverProfiles(cells, myDid ?? undefined);
 			const loc = get(locationStore);
-			const identity = get(identityStore).identity;
-			const myBoxSecretKey = identity?.boxSecretKey ?? null;
 
-			// Decrypt encrypted profile fields where we have keys
-			const decryptedData = await Promise.all(data.filter(p => p.did !== myDid).map(async (p) => {
+			// Decrypt profile fields using the key from the API response
+			const decryptedData = data.filter(p => p.did !== myDid).map(p => {
 				let decryptedBio = p.bio;
 				let decryptedAge = p.age;
-				let decryptedTags: string[] = [];
+				let decryptedTags: string[] = p.tags ?? [];
 
-				if (p.encryptedFields && p.encryptedFieldsNonce && myBoxSecretKey) {
+				if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
 					try {
-						// Try to unwrap the profile key
-						let profileKey: string | null = null;
-
-						// Check if server included a wrapped key for us
-						if (p.wrappedProfileKey && p.wrappedProfileKeyNonce && p.boxPublicKey) {
-							try {
-								profileKey = unwrapKey(
-									p.wrappedProfileKey,
-									p.wrappedProfileKeyNonce,
-									decodeBase64(p.boxPublicKey),
-									myBoxSecretKey
-								);
-								await cacheProfileKey(p.did, profileKey, p.wrappedProfileKeyVersion ?? 0);
-							} catch {}
-						}
-
-						// Fallback to cached key
-						if (!profileKey) {
-							const cached = await getCachedProfileKey(p.did);
-							if (cached) profileKey = cached.key;
-						}
-
-						// Decrypt if we have a key
-						if (profileKey) {
-							const fields = decryptProfileFields(p.encryptedFields!, p.encryptedFieldsNonce!, profileKey);
-							decryptedBio = fields.bio ?? '';
-							decryptedAge = fields.age;
-							decryptedTags = fields.tags ?? [];
-						}
+						const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+						decryptedBio = fields.bio ?? '';
+						decryptedAge = fields.age;
+						decryptedTags = fields.tags ?? [];
 					} catch {}
 				}
 
 				return { ...p, bio: decryptedBio, age: decryptedAge, tags: decryptedTags };
-			}));
+			});
 
 			let enriched: NearbyProfile[];
 
@@ -303,33 +287,11 @@
 			}
 
 			allProfiles = enriched;
-
-			// Distribute own profile key to discovered users (background)
-			distributeProfileKey(decryptedData.filter(p => p.boxPublicKey).map(p => ({ did: p.did, boxPublicKey: p.boxPublicKey! })));
 		} catch {
 			allProfiles = [];
 		} finally {
 			loading = false;
 		}
-	}
-
-	/** Wrap and distribute own profile key to nearby users (fire-and-forget). */
-	async function distributeProfileKey(recipients: Array<{ did: string; boxPublicKey: string }>) {
-		try {
-			const identity = get(identityStore).identity;
-			if (!identity?.boxSecretKey || !identity?.did) return;
-			const myBoxSecretKey = identity.boxSecretKey;
-			const myKey = await getMyProfileKey();
-
-			const keys = recipients.map(r => {
-				const { wrappedKey, nonce } = wrapProfileKey(myKey.key, myBoxSecretKey, decodeBase64(r.boxPublicKey));
-				return { recipientDid: r.did, wrappedKey, wrappedKeyNonce: nonce, keyVersion: myKey.version };
-			});
-
-			if (keys.length > 0) {
-				await storeProfileKeys(identity.did, keys);
-			}
-		} catch {}
 	}
 
 	async function openChat(profile: NearbyProfile) {
@@ -341,7 +303,8 @@
 			const params = new URLSearchParams({
 				peerDid: profile.did,
 				peerName: profile.displayName,
-				peerKey: profile.boxPublicKey
+				peerKey: profile.boxPublicKey,
+				from: 'grid'
 			});
 			goto(`/chat/${groupId}?${params}`);
 		} catch (e) {
@@ -358,17 +321,6 @@
 
 	function hasRequest(did: string): boolean {
 		return requestSenderDids.has(did);
-	}
-
-	function formatDistance(meters?: number): string {
-		if (!meters) return '';
-		if (meters < 250) return '< 250m';
-		if (meters < 500) return '< 500m';
-		if (meters < 1000) return '< 1km';
-		if (meters < 2000) return '~1km';
-		if (meters < 5000) return '~' + Math.round(meters / 1000) + 'km';
-		if (meters < 50000) return '~' + Math.round(meters / 1000) + 'km';
-		return '~' + Math.round(meters / 1000) + 'km';
 	}
 
 	type Presence = 'online' | 'idle' | 'away';
@@ -415,12 +367,7 @@
 		return `${BASE}/media/${profile.avatarMediaId}/blob`;
 	}
 
-	let showGroups = $state(false);
 	let isMapActive = $derived(viewMode === 'map' && hasLoc && !loading && !locationError);
-
-	function setFilter(filterId: string) {
-		activeFilter = filterId;
-	}
 
 	// Infinite scroll: IntersectionObserver on a sentinel element
 	let sentinel: HTMLElement | undefined = $state();
@@ -444,35 +391,42 @@
 
 <div class="grid-page" class:map-mode={isMapActive}>
 	<div class="page-container grid-container">
-		<!-- Tab bar: grid/map toggle + groups filter -->
+		<!-- Tab bar: grid/map toggle + filter -->
 		<div class="tab-bar grid-tabs">
-			<button class="tab" class:active={viewMode === 'grid'} onclick={() => viewMode = 'grid'}>grid</button>
-			<button class="tab" class:active={viewMode === 'map'} onclick={() => viewMode = 'map'}>map</button>
-			{#if activeFilter !== 'all'}
-				{@const g = myGroups.find(g => g.id === activeFilter)}
-				<button
-					class="tab active"
-					onclick={() => { setFilter('all'); showGroups = false; }}
-				>{g?.name ?? 'group'} ×</button>
-			{:else}
-				<button
-					class="tab"
-					class:open={showGroups}
-					onclick={() => showGroups = !showGroups}
-				>groups +</button>
-			{/if}
+			<button class="tab" class:active={viewMode === 'grid'} onclick={() => { viewMode = 'grid'; showFilter = false; }}>grid</button>
+			<button class="tab" class:active={viewMode === 'map'} onclick={() => { viewMode = 'map'; showFilter = false; }}>map</button>
+			<button class="tab" class:active={showFilter} onclick={() => showFilter = !showFilter}>
+				filter{#if activeFilterCount > 0}&nbsp;({activeFilterCount}){/if}
+			</button>
 		</div>
 
-		{#if showGroups && activeFilter === 'all'}
-			<div class="groups-dropdown">
-				{#each myGroups as group}
-					<button
-						class="group-option"
-						onclick={() => { setFilter(group.id); showGroups = false; }}
-					>{group.name}</button>
-				{/each}
-				{#if myGroups.length === 0}
-					<a href="/chat" class="group-option create" onclick={() => showGroups = false}>+ create group</a>
+		{#if showFilter}
+			<div class="filter-dropdown">
+				<input
+					type="text"
+					class="filter-search"
+					placeholder="search tags..."
+					bind:value={tagSearch}
+				/>
+				{#if myGroups.length > 0}
+					<div class="filter-section-label">groups</div>
+					{#each myGroups as group}
+						<button
+							class="filter-group-row"
+							class:selected={selectedGroups.has(group.id)}
+							onclick={() => {
+								const next = new Set(selectedGroups);
+								if (next.has(group.id)) next.delete(group.id);
+								else next.add(group.id);
+								selectedGroups = next;
+							}}
+						>{group.name}</button>
+					{/each}
+				{:else}
+					<a href="/chat" class="filter-group-row create">+ create group</a>
+				{/if}
+				{#if activeFilterCount > 0}
+					<button class="filter-clear" onclick={() => { tagSearch = ''; selectedGroups = new Set(); }}>clear filters</button>
 				{/if}
 			</div>
 		{/if}
@@ -499,7 +453,7 @@
 						profiles={profiles}
 						userLat={loc.lat}
 						userLon={loc.lon}
-						{activeFilter}
+						activeFilter={'all'}
 						groups={myGroups.map(g => ({ id: g.id, name: g.name }))}
 					/>
 				{/if}
@@ -513,12 +467,7 @@
 					{@const hasReq = hasRequest(profile.did)}
 					{@const presence = getPresence(profile.lastSeen)}
 					{@const url = avatarUrl(profile)}
-					{@const isGroupMember = profile.sharedGroups.length > 0}
-					<button
-						class="tile"
-						class:muted={!isGroupMember && activeFilter === 'all' && myGroups.length > 0}
-						onclick={() => openChat(profile)}
-					>
+					<button class="tile" onclick={() => openChat(profile)}>
 						{#if url}
 							<img src={url} alt={profile.displayName} class="tile-img" loading="lazy" />
 						{:else}
@@ -527,41 +476,13 @@
 							</div>
 						{/if}
 
-						<!-- Presence dot -->
 						<span class="tile-presence {presence}"></span>
 
-						<!-- Unread / request badge -->
 						{#if unread > 0}
 							<span class="tile-badge">{unread}</span>
 						{:else if hasReq}
 							<span class="tile-badge request-badge">!</span>
 						{/if}
-
-						<!-- Group badges -->
-						{#if isGroupMember}
-							<div class="group-badges" class:below-badge={unread > 0 || hasReq}>
-								{#each profile.sharedGroups as group}
-									<span class="group-badge">{group.name}</span>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Bottom overlay with name + distance + tags -->
-						<div class="tile-overlay">
-							<span class="tile-name">
-								{profile.displayName}{#if profile.age}, {profile.age}{/if}
-							</span>
-							{#if profile.tags?.length > 0}
-								<div class="tile-tags">
-									{#each profile.tags.slice(0, 3) as tag}
-										<span class="tile-tag">{tag}</span>
-									{/each}
-								</div>
-							{/if}
-							{#if profile.distance}
-								<span class="tile-dist">{formatDistance(profile.distance)}</span>
-							{/if}
-						</div>
 					</button>
 				{/each}
 			</div>
@@ -607,14 +528,35 @@
 		overflow: hidden;
 	}
 
-	/* Groups dropdown */
-	.groups-dropdown {
+	/* Filter dropdown */
+	.filter-dropdown {
 		display: flex;
 		flex-direction: column;
 		border-bottom: 1px solid var(--border);
 	}
-	.group-option {
+	.filter-search {
+		width: 100%;
 		padding: 12px 16px;
+		font-size: 14px;
+		border: none;
+		border-bottom: 1px solid var(--border);
+		background: transparent;
+		color: var(--text);
+		outline: none;
+		box-sizing: border-box;
+		min-height: 48px;
+	}
+	.filter-search::placeholder {
+		color: var(--text-tertiary);
+	}
+	.filter-section-label {
+		padding: 10px 16px 4px;
+		font-size: 11px;
+		color: var(--text-tertiary);
+		text-transform: lowercase;
+	}
+	.filter-group-row {
+		padding: 10px 16px;
 		font-size: 14px;
 		border: none;
 		border-radius: 0;
@@ -622,22 +564,40 @@
 		color: var(--text-muted);
 		cursor: pointer;
 		text-align: left;
-		min-height: 48px;
+		min-height: 44px;
 		display: flex;
 		align-items: center;
 		text-decoration: none;
 	}
-	.group-option:not(:last-child) {
-		border-bottom: 1px solid var(--border);
+	.filter-group-row.selected {
+		color: var(--text);
+		background: var(--bg-hover);
 	}
 	@media (hover: hover) {
-		.group-option:hover {
+		.filter-group-row:hover {
 			background: var(--bg-hover);
 			color: var(--text);
 		}
 	}
-	.group-option.create {
+	.filter-group-row.create {
 		color: var(--text-muted);
+	}
+	.filter-clear {
+		padding: 12px 16px;
+		font-size: 13px;
+		border: none;
+		border-top: 1px solid var(--border);
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		text-align: left;
+		min-height: 44px;
+	}
+	@media (hover: hover) {
+		.filter-clear:hover {
+			color: var(--text);
+		}
 	}
 
 	/* Status / empty states */
@@ -707,14 +667,6 @@
 			opacity: 0.85;
 		}
 	}
-	.tile.muted {
-		opacity: 0.55;
-	}
-	@media (hover: hover) {
-		.tile.muted:hover {
-			opacity: 0.45;
-		}
-	}
 	.tile-img {
 		width: 100%;
 		height: 100%;
@@ -762,71 +714,6 @@
 	}
 	.request-badge {
 		background: var(--text-muted);
-	}
-	.group-badges {
-		position: absolute;
-		top: 6px;
-		right: 4px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		align-items: flex-end;
-	}
-	.group-badges.below-badge {
-		top: 26px;
-	}
-	.group-badge {
-		background: rgba(0, 0, 0, 0.7);
-		color: var(--white);
-		font-size: 10px;
-		padding: 2px 6px;
-		border-radius: 1px;
-		white-space: nowrap;
-		max-width: 80px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		line-height: 1.3;
-	}
-	.tile-overlay {
-		position: absolute;
-		bottom: 0;
-		left: 0;
-		right: 0;
-		padding: 28px 8px 8px;
-		background: linear-gradient(transparent, rgba(0,0,0,0.85));
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-	.tile-name {
-		color: #fff;
-		font-size: 13px;
-		font-weight: 500;
-		line-height: 1.3;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-	}
-	.tile-tags {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 3px;
-		margin-top: 1px;
-	}
-	.tile-tag {
-		font-size: 10px;
-		color: rgba(255, 255, 255, 0.7);
-		border: 1px solid rgba(255, 255, 255, 0.25);
-		padding: 1px 5px;
-		border-radius: 1px;
-		line-height: 1.3;
-		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-	}
-	.tile-dist {
-		color: rgba(255, 255, 255, 0.6);
-		font-size: 12px;
-		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 	}
 	.load-more {
 		display: flex;

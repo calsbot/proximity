@@ -92,11 +92,21 @@ interface OwnProfileKeyData {
 
 /** Load or create own profile key. Namespaced by DID to avoid cross-identity leaks. */
 export async function getMyProfileKey(): Promise<OwnProfileKeyData> {
-	const kvKey = currentProfileDid ? `profile-key-${currentProfileDid.slice(-12)}` : 'profile-key';
+	const namespacedKey = currentProfileDid ? `profile-key-${currentProfileDid.slice(-12)}` : null;
+	const kvKey = namespacedKey || 'profile-key';
 	try {
 		const db = await getKvDb();
 		const existing: OwnProfileKeyData | undefined = await db.get('kv', kvKey);
 		if (existing) return existing;
+
+		// Migration: if using namespaced key but not found, check un-namespaced key
+		if (namespacedKey) {
+			const fallback: OwnProfileKeyData | undefined = await db.get('kv', 'profile-key');
+			if (fallback) {
+				await db.put('kv', fallback, namespacedKey);
+				return fallback;
+			}
+		}
 	} catch {}
 
 	// Generate new key

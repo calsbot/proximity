@@ -1,11 +1,10 @@
 /**
- * Profile encryption: encrypt bio, age, tags with a per-user symmetric key.
- * Key is distributed via nacl.box wrapping to nearby users and group members.
- * displayName stays plaintext (it's the public handle for search/grid).
+ * Profile encryption: encrypt bio, age, tags with a per-profile symmetric key.
+ * Key is stored on the profile row itself — anyone who can fetch the profile
+ * via the API can decrypt. Protects against raw database dumps.
  */
 import nacl from 'tweetnacl';
 import { encodeBase64, decodeBase64, encodeUTF8, decodeUTF8 } from './util';
-import { wrapKeyForRecipient, unwrapKey } from './media';
 
 export interface ProfileFields {
 	bio: string;
@@ -45,23 +44,4 @@ export function decryptProfileFields(
 	const decrypted = nacl.secretbox.open(ciphertext, nonce, key);
 	if (!decrypted) throw new Error('Profile decryption failed');
 	return JSON.parse(encodeUTF8(decrypted));
-}
-
-/** Wrap profile key for a specific recipient using nacl.box. */
-export function wrapProfileKey(
-	profileKeyB64: string,
-	myBoxSecretKey: Uint8Array,
-	recipientBoxPublicKey: Uint8Array
-): { wrappedKey: string; nonce: string } {
-	return wrapKeyForRecipient(profileKeyB64, myBoxSecretKey, recipientBoxPublicKey);
-}
-
-/** Unwrap a profile key that was wrapped for us. */
-export function unwrapProfileKey(
-	wrappedKey: string,
-	nonce: string,
-	senderBoxPublicKey: Uint8Array,
-	myBoxSecretKey: Uint8Array
-): string {
-	return unwrapKey(wrappedKey, nonce, senderBoxPublicKey, myBoxSecretKey);
 }

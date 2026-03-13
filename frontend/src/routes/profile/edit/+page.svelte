@@ -5,9 +5,7 @@
 	import { encryptMedia, decryptMedia, fileToUint8Array, bytesToObjectUrl } from '$lib/crypto/media';
 	import { loadIdentityFromStorage, downloadIdentityBackup, clearIdentityFromStorage } from '$lib/crypto/identity';
 	import { clearIdentitySession, broadcastIdentityChange } from '$lib/stores/identity';
-	import { encryptProfileFields, decryptProfileFields } from '$lib/crypto/profile';
-	import { getMyProfileKey } from '$lib/stores/profileKeys';
-	import { decodeBase64 } from '$lib/crypto/util';
+	import { encryptProfileFields, decryptProfileFields, generateProfileKey } from '$lib/crypto/profile';
 	import { wsStatus } from '$lib/services/websocket';
 	import ImageCropper from '$lib/components/ImageCropper.svelte';
 
@@ -21,6 +19,7 @@
 	let error = $state('');
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let initialLoad = $state(true);
+	let profileKey = $state<string | null>(null); // base64 secretbox key from server
 
 	// Photo upload
 	let avatarUrl = $state<string | null>(null);
@@ -55,12 +54,12 @@
 			try {
 				const profile = await getProfile(did);
 				displayName = profile.displayName ?? '';
+				profileKey = profile.profileKey ?? null;
 
-				// Decrypt encrypted fields if present
-				if (profile.encryptedFields && profile.encryptedFieldsNonce) {
+				// Decrypt encrypted fields if key is available
+				if (profile.encryptedFields && profile.encryptedFieldsNonce && profile.profileKey) {
 					try {
-						const myKey = await getMyProfileKey();
-						const fields = decryptProfileFields(profile.encryptedFields, profile.encryptedFieldsNonce, myKey.key);
+						const fields = decryptProfileFields(profile.encryptedFields, profile.encryptedFieldsNonce, profile.profileKey);
 						bio = fields.bio ?? '';
 						age = fields.age ? String(fields.age) : '';
 						tags = fields.tags ?? [];
@@ -68,10 +67,12 @@
 						// Fallback to plaintext fields
 						bio = profile.bio ?? '';
 						age = profile.age ? String(profile.age) : '';
+						tags = profile.tags ?? [];
 					}
 				} else {
 					bio = profile.bio ?? '';
 					age = profile.age ? String(profile.age) : '';
+					tags = profile.tags ?? [];
 				}
 
 					// Mark initial load complete after a tick so auto-save doesn't fire
@@ -136,19 +137,22 @@
 		error = '';
 
 		try {
-			const myKey = await getMyProfileKey();
+			// Generate profile key if we don't have one yet
+			if (!profileKey) profileKey = generateProfileKey();
+
 			const { encryptedFields, nonce } = encryptProfileFields(
 				{ bio: bio.trim(), age: age ? parseInt(age) : null, tags },
-				myKey.key
+				profileKey
 			);
 
 			await updateProfile(myDid, {
 				displayName: displayName.trim() || undefined,
 				bio: bio.trim(),
 				age: age ? parseInt(age) : undefined,
+				tags,
+				profileKey,
 				encryptedFields,
 				encryptedFieldsNonce: nonce,
-				profileKeyVersion: myKey.version,
 			});
 			saved = true;
 			setTimeout(() => saved = false, 2000);

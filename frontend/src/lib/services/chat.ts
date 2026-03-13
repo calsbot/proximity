@@ -50,8 +50,6 @@ import {
 } from '$lib/crypto/group';
 import { encryptMedia, fileToUint8Array } from '$lib/crypto/media';
 import { computePerceptualHash } from '$lib/crypto/phash';
-import { wrapProfileKey } from '$lib/crypto/profile';
-import { getMyProfileKey, initProfileKeyStore } from '$lib/stores/profileKeys';
 import {
 	sendMessage as apiSendMessage,
 	fetchMessages,
@@ -59,7 +57,6 @@ import {
 	getGroup,
 	storeGroupKeys,
 	getMyGroupKeys,
-	storeProfileKeys,
 	uploadMedia,
 	uploadMediaSealed,
 	notifyMediaViewed,
@@ -173,9 +170,6 @@ export async function initChat(): Promise<void> {
 	initialized = true;
 
 	await loadConversations(state.identity.did);
-
-	// Initialize profile key store for this identity
-	initProfileKeyStore(state.identity.did);
 
 	// Ensure delivery token exists and is registered with server
 	await loadOrCreateDeliveryToken(state.identity.did);
@@ -1663,7 +1657,6 @@ export async function bootstrapSenderKeys(groupId: string): Promise<void> {
 		}
 
 		// Exchange profile keys with group members (fire-and-forget)
-		exchangeProfileKeysWithGroup(groupId).catch(() => {});
 	} catch (e) {
 		console.error('[chat] Failed to bootstrap sender keys:', e);
 	}
@@ -1834,31 +1827,6 @@ async function handleMemberJoined(data: { groupId: string; memberDid: string }):
  * Wraps own profile key for each member, stores on server.
  * Called after joining a group or when a new member joins.
  */
-export async function exchangeProfileKeysWithGroup(groupId: string): Promise<void> {
-	const state = get(identityStore);
-	if (!state.identity) return;
-
-	try {
-		const group = await getGroup(groupId);
-		const myKey = await getMyProfileKey();
-		const myBoxSecretKey = state.identity.boxSecretKey;
-
-		// Wrap our profile key for each member
-		const keys = group.members
-			.filter(m => m.did !== state.identity!.did && m.boxPublicKey)
-			.map(m => {
-				const { wrappedKey, nonce } = wrapProfileKey(myKey.key, myBoxSecretKey, decodeBase64(m.boxPublicKey!));
-				return { recipientDid: m.did, wrappedKey, wrappedKeyNonce: nonce, keyVersion: myKey.version };
-			});
-
-		if (keys.length > 0) {
-			await storeProfileKeys(state.identity.did, keys);
-		}
-	} catch (e) {
-		console.error('[chat] Failed to exchange profile keys:', e);
-	}
-}
-
 /**
  * Handle key_rotation WS event — fetch new sender keys from server,
  * then retry any pending sealed group messages that couldn't be decrypted.

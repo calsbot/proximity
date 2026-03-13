@@ -32,15 +32,16 @@ export function updateProfile(did: string, data: {
 	displayName?: string;
 	bio?: string;
 	age?: number;
+	tags?: string[];
 	geohashCells?: string[];
 	avatarMediaId?: string;
 	avatarKey?: string;
 	avatarNonce?: string;
 	instagram?: string;
 	profileLink?: string;
+	profileKey?: string;
 	encryptedFields?: string;
 	encryptedFieldsNonce?: string;
-	profileKeyVersion?: number;
 }) {
 	return request<{ ok: boolean }>(`/profiles/${encodeURIComponent(did)}`, {
 		method: 'PUT',
@@ -56,18 +57,16 @@ export function discoverProfiles(cells: string[], requesterDid?: string) {
 		displayName: string;
 		bio: string;
 		age: number | null;
+		tags: string[];
 		boxPublicKey: string | null;
 		avatarMediaId: string | null;
 		avatarKey: string | null;
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		profileKey: string | null;
 		encryptedFields: string | null;
 		encryptedFieldsNonce: string | null;
-		profileKeyVersion: number | null;
-		wrappedProfileKey: string | null;
-		wrappedProfileKeyNonce: string | null;
-		wrappedProfileKeyVersion: number | null;
 		geohashCell: string;
 		lastSeen: string;
 	}>>(url);
@@ -95,6 +94,7 @@ export function getProfile(did: string) {
 		displayName: string;
 		bio: string;
 		age: number | null;
+		tags: string[];
 		publicKey: string | null;
 		boxPublicKey: string | null;
 		avatarMediaId: string | null;
@@ -102,37 +102,12 @@ export function getProfile(did: string) {
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		profileKey: string | null;
 		encryptedFields: string | null;
 		encryptedFieldsNonce: string | null;
-		profileKeyVersion: number | null;
 		geohashCells: string;
 		lastSeen: string;
 	}>(`/profiles/${encodeURIComponent(did)}`);
-}
-
-// --- Profile Keys ---
-
-export function storeProfileKeys(ownerDid: string, keys: Array<{ recipientDid: string; wrappedKey: string; wrappedKeyNonce: string; keyVersion: number }>) {
-	return request<{ ok: boolean }>('/profiles/keys', {
-		method: 'POST',
-		body: JSON.stringify({ ownerDid, keys })
-	});
-}
-
-export function getProfileKeysForMe(recipientDid: string) {
-	return request<Array<{
-		ownerDid: string;
-		wrappedKey: string;
-		wrappedKeyNonce: string;
-		keyVersion: number;
-	}>>(`/profiles/keys?recipientDid=${encodeURIComponent(recipientDid)}`);
-}
-
-export function revokeProfileKey(ownerDid: string, recipientDid: string) {
-	return request<{ ok: boolean }>('/profiles/keys', {
-		method: 'DELETE',
-		body: JSON.stringify({ ownerDid, recipientDid })
-	});
 }
 
 // --- Messages ---

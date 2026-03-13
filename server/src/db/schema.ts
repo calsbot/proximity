@@ -13,9 +13,10 @@ export const profiles = sqliteTable('profiles', {
 	avatarNonce: text('avatar_nonce'), // base64 nonce for avatar decryption
 	instagram: text('instagram'), // instagram handle (no @ prefix)
 	profileLink: text('profile_link'), // optional external link (twitter, personal site, etc.)
+	tags: text('tags'), // JSON array string e.g. '["masc","looking for friends"]'
+	profileKey: text('profile_key'), // base64 nacl.secretbox key — stored on row, anyone who can fetch profile can decrypt
 	encryptedFields: text('encrypted_fields'), // base64 nacl.secretbox ciphertext of JSON {bio, age, tags}
 	encryptedFieldsNonce: text('encrypted_fields_nonce'), // base64 nonce
-	profileKeyVersion: integer('profile_key_version').default(0), // increments on key rotation
 	geohashCells: text('geohash_cells'), // JSON array of cells where discoverable
 	lastSeen: integer('last_seen', { mode: 'timestamp' }),
 	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
@@ -129,18 +130,6 @@ export const sealedMessages = sqliteTable('sealed_messages', {
 export const groupDeliveryTokens = sqliteTable('group_delivery_tokens', {
 	groupId: text('group_id').primaryKey(), // one token per group
 	tokenHash: text('token_hash').notNull(), // SHA-256 hex of the group delivery token
-	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
-});
-
-// --- Profile encryption keys ---
-
-export const profileKeys = sqliteTable('profile_keys', {
-	id: text('id').primaryKey(), // nanoid
-	ownerDid: text('owner_did').notNull().references(() => profiles.did),
-	recipientDid: text('recipient_did').notNull().references(() => profiles.did),
-	wrappedKey: text('wrapped_key').notNull(), // base64 nacl.box encrypted profile key
-	wrappedKeyNonce: text('wrapped_key_nonce').notNull(), // base64 nonce for unwrapping
-	keyVersion: integer('key_version').notNull().default(0),
 	createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date())
 });
 

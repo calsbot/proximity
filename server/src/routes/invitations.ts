@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { dmInvitations, dmLeaves, blocks, profiles, encryptedMessages } from '../db/schema';
+import { dmInvitations, dmLeaves, blocks, profiles, encryptedMessages, groupMembers } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
 import { wsClients } from '../index';
@@ -45,6 +45,62 @@ invitationRoutes.post('/dm', async (c) => {
 	).get();
 	if (reverseBlocked) {
 		return c.json({ error: 'Cannot send invitation' }, 403);
+	}
+
+	// Check if sender and recipient share a group → auto-accept (no request needed)
+	const senderGroups = await db.select({ groupId: groupMembers.groupId })
+		.from(groupMembers).where(eq(groupMembers.did, body.senderDid)).all();
+	const recipientGroups = await db.select({ groupId: groupMembers.groupId })
+		.from(groupMembers).where(eq(groupMembers.did, body.recipientDid)).all();
+	const senderGroupIds = new Set(senderGroups.map(g => g.groupId));
+	const sharesGroup = recipientGroups.some(g => senderGroupIds.has(g.groupId));
+
+	if (sharesGroup) {
+		const id = nanoid();
+		await db.insert(dmInvitations).values({
+			id,
+			senderDid: body.senderDid,
+			recipientDid: body.recipientDid,
+			groupId: body.groupId,
+			senderDisplayName: body.senderDisplayName,
+			senderAvatarMediaId: body.senderAvatarMediaId ?? null,
+			senderAvatarKey: body.senderAvatarKey ?? null,
+			senderAvatarNonce: body.senderAvatarNonce ?? null,
+			senderGeohashCell: body.senderGeohashCell ?? null,
+			firstMessageCiphertext: body.firstMessageCiphertext,
+			firstMessageNonce: body.firstMessageNonce,
+			firstMessageEpoch: body.firstMessageEpoch,
+			firstMessageDhPublicKey: body.firstMessageDhPublicKey ?? null,
+			firstMessagePreviousCounter: body.firstMessagePreviousCounter ?? null,
+			status: 'accepted',
+		});
+		// Insert first message directly so it's available for polling
+		if (body.firstMessageCiphertext) {
+			await db.insert(encryptedMessages).values({
+				id: nanoid(),
+				groupId: body.groupId,
+				senderDid: body.senderDid,
+				recipientDid: body.recipientDid,
+				epoch: body.firstMessageEpoch,
+				ciphertext: body.firstMessageCiphertext,
+				nonce: body.firstMessageNonce,
+				dhPublicKey: body.firstMessageDhPublicKey ?? null,
+				previousCounter: body.firstMessagePreviousCounter ?? null,
+			});
+		}
+		// Clear any prior leave records
+		await db.delete(dmLeaves).where(eq(dmLeaves.groupId, body.groupId));
+		// Notify sender it was auto-accepted
+		const senderWs = wsClients.get(body.senderDid);
+		if (senderWs) {
+			senderWs.send(JSON.stringify({ type: 'dm_accepted', groupId: body.groupId }));
+		}
+		// Notify recipient of the new message
+		const recipientWs = wsClients.get(body.recipientDid);
+		if (recipientWs) {
+			recipientWs.send(JSON.stringify({ type: 'message', groupId: body.groupId }));
+		}
+		return c.json({ ok: true, id, autoAccepted: true });
 	}
 
 	// Check for existing pending invitation from same sender to same recipient
