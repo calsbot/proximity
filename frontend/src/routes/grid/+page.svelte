@@ -391,45 +391,47 @@
 
 <div class="grid-page" class:map-mode={isMapActive}>
 	<div class="page-container grid-container">
-		<!-- Tab bar: grid/map toggle + filter -->
-		<div class="tab-bar grid-tabs">
-			<button class="tab" class:active={viewMode === 'grid'} onclick={() => { viewMode = 'grid'; showFilter = false; }}>grid</button>
-			<button class="tab" class:active={viewMode === 'map'} onclick={() => { viewMode = 'map'; showFilter = false; }}>map</button>
-			<button class="tab" class:active={showFilter} onclick={() => showFilter = !showFilter}>
-				filter{#if activeFilterCount > 0}&nbsp;({activeFilterCount}){/if}
-			</button>
-		</div>
-
-		{#if showFilter}
-			<div class="filter-dropdown">
-				<input
-					type="text"
-					class="filter-search"
-					placeholder="search tags..."
-					bind:value={tagSearch}
-				/>
-				{#if myGroups.length > 0}
-					<div class="filter-section-label">groups</div>
-					{#each myGroups as group}
-						<button
-							class="filter-group-row"
-							class:selected={selectedGroups.has(group.id)}
-							onclick={() => {
-								const next = new Set(selectedGroups);
-								if (next.has(group.id)) next.delete(group.id);
-								else next.add(group.id);
-								selectedGroups = next;
-							}}
-						>{group.name}</button>
-					{/each}
-				{:else}
-					<a href="/chat" class="filter-group-row create">+ create group</a>
-				{/if}
-				{#if activeFilterCount > 0}
-					<button class="filter-clear" onclick={() => { tagSearch = ''; selectedGroups = new Set(); }}>clear filters</button>
-				{/if}
+		<div class="grid-top">
+			<!-- Tab bar: grid/map toggle + filter -->
+			<div class="tab-bar grid-tabs">
+				<button class="tab" class:active={viewMode === 'grid'} onclick={() => { viewMode = 'grid'; showFilter = false; }}>grid</button>
+				<button class="tab" class:active={viewMode === 'map'} onclick={() => { viewMode = 'map'; showFilter = false; }}>map</button>
+				<button class="tab" class:active={showFilter} onclick={() => showFilter = !showFilter}>
+					filter{#if activeFilterCount > 0}&nbsp;({activeFilterCount}){/if}
+				</button>
 			</div>
-		{/if}
+
+			{#if showFilter}
+				<div class="filter-dropdown">
+					<input
+						type="text"
+						class="filter-search"
+						placeholder="search tags..."
+						bind:value={tagSearch}
+					/>
+					{#if myGroups.length > 0}
+						<div class="filter-section-label">groups</div>
+						{#each myGroups as group}
+							<button
+								class="filter-group-row"
+								class:selected={selectedGroups.has(group.id)}
+								onclick={() => {
+									const next = new Set(selectedGroups);
+									if (next.has(group.id)) next.delete(group.id);
+									else next.add(group.id);
+									selectedGroups = next;
+								}}
+							>{group.name}</button>
+						{/each}
+					{:else}
+						<a href="/chat" class="filter-group-row create">+ create group</a>
+					{/if}
+					{#if activeFilterCount > 0}
+						<button class="filter-clear" onclick={() => { tagSearch = ''; selectedGroups = new Set(); }}>clear filters</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
 
 		{#if !hasLoc && !loading && !locationError}
 			<div class="location-prompt">
@@ -476,7 +478,9 @@
 							</div>
 						{/if}
 
-						<span class="tile-presence {presence}"></span>
+						{#if presence !== 'away'}
+							<span class="tile-presence-border {presence}"></span>
+						{/if}
 
 						{#if unread > 0}
 							<span class="tile-badge">{unread}</span>
@@ -514,6 +518,19 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+	}
+	.grid-container {
+		overflow: visible;
+		border: none;
+		border-radius: 0;
+	}
+	.grid-top {
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		background: var(--bg);
+		padding-top: max(12px, var(--safe-top));
+		margin-top: calc(-1 * max(12px, var(--safe-top)));
 	}
 	.grid-tabs {
 		border-top: none;
@@ -686,18 +703,15 @@
 		color: var(--text-tertiary);
 		font-weight: 300;
 	}
-	.tile-presence {
+	.tile-presence-border {
 		position: absolute;
-		top: 6px;
-		left: 6px;
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		border: 1.5px solid rgba(0, 0, 0, 0.5);
+		bottom: 0;
+		left: 0;
+		right: 0;
+		height: 2px;
 	}
-	.tile-presence.online { background: var(--online); }
-	.tile-presence.idle { background: var(--idle); }
-	.tile-presence.away { background: var(--offline); }
+	.tile-presence-border.online { background: var(--online); }
+	.tile-presence-border.idle { background: var(--idle); }
 	.tile-badge {
 		position: absolute;
 		top: 4px;

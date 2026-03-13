@@ -69,9 +69,9 @@
 	}
 
 	function presenceColor(p: Presence): string {
-		if (p === 'active') return '#44ff44';
-		if (p === 'idle') return '#ffcc00';
-		return '#555';
+		if (p === 'active') return '#5c8a56';
+		if (p === 'idle') return '#c49a3a';
+		return '#888';
 	}
 
 	function presenceOpacity(p: Presence): number {
