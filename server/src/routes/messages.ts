@@ -63,6 +63,16 @@ messageRoutes.post('/', async (c) => {
 		if (leaveRecord.length > 0) {
 			return c.json({ error: 'Conversation ended — send a new request to reconnect' }, 403);
 		}
+
+		// Block messages for DMs with pending (unaccepted) invitation — forces proper invitation flow.
+		// Only blocks if a pending invitation exists; allows messages when no invitation record exists
+		// (backwards compat with pre-invitation DMs) or when invitation is already accepted.
+		const pendingInvite = await db.select({ id: dmInvitations.id }).from(dmInvitations).where(
+			and(eq(dmInvitations.groupId, body.groupId), eq(dmInvitations.status, 'pending'))
+		).limit(1).get();
+		if (pendingInvite) {
+			return c.json({ error: 'DM invitation pending — message blocked until accepted' }, 403);
+		}
 	}
 
 	const id = nanoid();

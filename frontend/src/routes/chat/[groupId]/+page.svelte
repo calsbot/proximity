@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
-	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, markConversationPeerLeft, unmarkConversationPeerLeft, diffGroupMembers, addMessage, muteConversation, unmuteConversation, resetSealedSender } from '$lib/stores/conversations';
+	import { conversationsStore, markRead, getOrCreateConversation, markConversationLeft, unmarkConversationLeft, markConversationPeerLeft, unmarkConversationPeerLeft, diffGroupMembers, addMessage, muteConversation, unmuteConversation, resetSealedSender, markDmAccepted } from '$lib/stores/conversations';
 	import { sendChatMessage, sendDMMediaMessage, initChat, sendGroupMessage, sendGroupMediaMessage, bootstrapSenderKeys, distributeMySenderKey, rotateGroupKey, handleMediaViewed, startConversation, getConversationId } from '$lib/services/chat';
 	import { getGroup, getProfile, leaveGroup, kickMember, transferAdmin, inviteToGroup, setInviteLinkHash, requestJoinGroup, listJoinRequests, respondToJoinRequest, acceptDMInvitation, declineDMInvitation, getDMInvitations, submitFlag, leaveDM, getDMStatus, sendDMInvitation } from '$lib/api';
 	import { goto } from '$app/navigation';
@@ -522,6 +522,7 @@
 				acceptDMInvitation(invId).then(() => {
 					unmarkConversationLeft(groupId);
 					unmarkConversationPeerLeft(groupId);
+					markDmAccepted(groupId);
 					resetSealedSender(groupId);
 				}).catch(e => console.error('[invitation] accept failed:', e));
 			}
@@ -681,6 +682,7 @@
 				await startConversation(pendingIncomingInvite.senderDid, pendingIncomingInvite.senderDisplayName, pendingIncomingInvite.senderBoxPublicKey);
 			}
 			unmarkConversationLeft(groupId);
+			markDmAccepted(groupId);
 			resetSealedSender(groupId);
 			pendingIncomingInvite = null;
 			pendingPeer = null;

@@ -56,6 +56,9 @@ export interface Conversation {
 	groupDeliveryToken?: string; // base64 — shared token for this group
 	// Muted — suppresses notifications and unread badge
 	muted?: boolean;
+	// DM invitation accepted — true once the DM has been accepted (or auto-accepted)
+	// Used for first-contact detection: only false when no invitation has been sent/accepted yet
+	dmAccepted?: boolean;
 }
 
 interface SerializedConversationKeys {
@@ -322,6 +325,20 @@ export function markRead(groupId: string): void {
  */
 export function getConversation(groupId: string): Conversation | undefined {
 	return get(conversationsStore).find(c => c.groupId === groupId);
+}
+
+/**
+ * Mark a DM conversation as accepted (invitation accepted or auto-accepted).
+ */
+export function markDmAccepted(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, dmAccepted: true };
+		});
+		persistConversations(updated);
+		return updated;
+	});
 }
 
 /**

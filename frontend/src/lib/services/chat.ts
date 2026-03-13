@@ -21,6 +21,7 @@ import {
 	setDeliveryTokens,
 	setGroupDeliveryToken,
 	resetSealedSender,
+	markDmAccepted,
 	type DecryptedMessage
 } from '$lib/stores/conversations';
 import {
@@ -252,6 +253,7 @@ export async function initChat(): Promise<void> {
 		if (data.type === 'dm_accepted') {
 			unmarkConversationLeft(data.groupId);
 			unmarkConversationPeerLeft(data.groupId);
+			markDmAccepted(data.groupId);
 			// Reset sealed sender so next message goes through unsealed path
 			// (re-triggers token exchange naturally, avoids stale delivery tokens)
 			resetSealedSender(data.groupId);
@@ -264,6 +266,7 @@ export async function initChat(): Promise<void> {
 			// Don't reset sealed sender (only the sender side does that via dm_accepted)
 			unmarkConversationLeft(data.groupId);
 			unmarkConversationPeerLeft(data.groupId);
+			markDmAccepted(data.groupId);
 			window.dispatchEvent(new CustomEvent('dm-reconnected', {
 				detail: { groupId: data.groupId }
 			}));
@@ -396,13 +399,15 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 	};
 	addMessage(groupId, localMsg, updatedKeys);
 
-	// First-contact detection: DM with no prior messages → route through invitation
-	const isFirstContact = !convo.isGroup && convo.messages.length === 0;
+	// First-contact detection: DM not yet accepted → route through invitation flow.
+	// Uses dmAccepted flag (not message count) — survives stale IndexedDB from server resets.
+	const isFirstContact = !convo.isGroup && !convo.dmAccepted;
+	console.log(`[chat] First-contact check: isGroup=${convo.isGroup} dmAccepted=${convo.dmAccepted} msgs=${convo.messages.length} → isFirstContact=${isFirstContact}`);
 	if (isFirstContact) {
 		try {
 			// Fetch our own profile for snapshot
 			const myProfile = await getProfile(state.identity.did);
-			await sendDMInvitation({
+			const result = await sendDMInvitation({
 				senderDid: state.identity.did,
 				recipientDid: convo.peerDid,
 				groupId: encrypted.groupId,
@@ -417,20 +422,30 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 				firstMessageDhPublicKey: encrypted.dhPublicKey,
 				firstMessagePreviousCounter: encrypted.previousCounter,
 			});
-			console.log('[invitations] DM invitation sent to', convo.peerDid);
+			console.log('[invitations] DM invitation sent to', convo.peerDid, result);
+			// If auto-accepted (users share a group), mark as accepted immediately
+			if (result && (result as any).autoAccepted) {
+				markDmAccepted(groupId);
+			}
 		} catch (e) {
-			console.error('[invitations] Failed to send DM invitation:', e);
-			// Fallback: send as regular message so the message isn't lost
-			await apiSendMessage({
-				groupId: encrypted.groupId,
-				senderDid: encrypted.senderDid,
-				recipientDid: encrypted.recipientDid,
-				epoch: encrypted.epoch,
-				ciphertext: encrypted.ciphertext,
-				nonce: encrypted.nonce,
-				dhPublicKey: encrypted.dhPublicKey,
-				previousCounter: encrypted.previousCounter,
-			});
+			const errMsg = e instanceof Error ? e.message : String(e);
+			console.error('[invitations] Failed to send DM invitation:', errMsg);
+			// If invitation already pending (409), don't fall back — just log
+			if (errMsg.includes('409') || errMsg.toLowerCase().includes('already pending')) {
+				console.log('[invitations] Invitation already pending — waiting for acceptance');
+			} else {
+				// For other errors (network, server down), send as regular message so it isn't lost
+				await apiSendMessage({
+					groupId: encrypted.groupId,
+					senderDid: encrypted.senderDid,
+					recipientDid: encrypted.recipientDid,
+					epoch: encrypted.epoch,
+					ciphertext: encrypted.ciphertext,
+					nonce: encrypted.nonce,
+					dhPublicKey: encrypted.dhPublicKey,
+					previousCounter: encrypted.previousCounter,
+				});
+			}
 		}
 		// Don't send via WebSocket — first message is delivered only through the invitation flow
 	} else if (!convo.isGroup && convo.sealedSenderEnabled && convo.peerDeliveryToken && convo.peerBoxPublicKey) {
