@@ -83,6 +83,8 @@
 		tags: string[];
 		avatarUrl: string | null;
 		boxPublicKey: string | null;
+		sharedGroupCount: number;
+		sharedGroupNames: string[];
 	}
 	let memberProfiles = $state<Record<string, MemberProfile>>({});
 	let loadingMemberProfile = $state<string | null>(null);
@@ -106,14 +108,17 @@
 	}
 	let peerProfile = $state<PeerProfile | null>(null);
 	let peerGroupsInCommon = $state(0);
+	let peerGroupNames = $state<string[]>([]);
 
 	// Compute distance from user's location to peer's geohash
 	let peerDistance = $derived.by(() => {
 		const loc = $locationStore;
 		const cell = peerProfile?.geohashCell;
 		if (!loc.lat || !loc.lon || !cell) return null;
-		const c = geohashCenter(cell);
-		return distanceMeters(loc.lat, loc.lon, c.lat, c.lon);
+		try {
+			const c = geohashCenter(cell);
+			return distanceMeters(loc.lat, loc.lon, c.lat, c.lon);
+		} catch { return null; }
 	});
 
 	let groupId = $derived(page.params.groupId);
@@ -262,17 +267,17 @@
 					}
 				}
 
-				const firstCell = p.geohashCells ? p.geohashCells.split(',')[0] || null : null;
+				let firstCell: string | null = null;
+				try { const cells = JSON.parse(p.geohashCells); if (Array.isArray(cells) && cells.length) firstCell = cells[0]; } catch {}
 				peerProfile = { displayName: p.displayName, bio, age, tags, avatarUrl, geohashCell: firstCell };
 
-				// Count shared groups
+				// Count shared groups and get their names
 				try {
 					const { listGroups } = await import('$lib/api');
 					const myGroupsList = await listGroups(did);
-					const peerDids = new Set(myGroupsList.flatMap(g => g.members.map(m => m.did)));
-					if (peerDids.has(peerDid!)) {
-						peerGroupsInCommon = myGroupsList.filter(g => g.members.some(m => m.did === peerDid)).length;
-					}
+					const shared = myGroupsList.filter(g => g.members.some(m => m.did === peerDid));
+					peerGroupsInCommon = shared.length;
+					peerGroupNames = shared.map(g => g.name);
 				} catch {}
 			} catch {}
 		})();
@@ -852,8 +857,19 @@
 					avatarUrl = `/media/${p.avatarMediaId}/blob`;
 				}
 			}
-			const memberCell = p.geohashCells ? p.geohashCells.split(',')[0] || null : null;
-			memberProfiles = { ...memberProfiles, [memberDid]: { did: memberDid, displayName: p.displayName, bio, age, tags, avatarUrl, boxPublicKey: p.boxPublicKey ?? null, geohashCell: memberCell } };
+			let memberCell: string | null = null;
+			try { const cells = JSON.parse(p.geohashCells); if (Array.isArray(cells) && cells.length) memberCell = cells[0]; } catch {}
+			// Fetch shared groups
+			let sharedGroupCount = 1;
+			let sharedGroupNames: string[] = [convo?.peerName ? `${convo.peerName} [this group]` : 'this group'];
+			try {
+				const { listGroups } = await import('$lib/api');
+				const myGroupsList = await listGroups(myDid!);
+				const shared = myGroupsList.filter(g => g.members.some(m => m.did === memberDid));
+				sharedGroupCount = shared.length;
+				sharedGroupNames = shared.map(g => g.id === groupId ? `${g.name} [this group]` : g.name);
+			} catch {}
+			memberProfiles = { ...memberProfiles, [memberDid]: { did: memberDid, displayName: p.displayName, bio, age, tags, avatarUrl, boxPublicKey: p.boxPublicKey ?? null, geohashCell: memberCell, sharedGroupCount, sharedGroupNames } };
 		} catch {}
 		loadingMemberProfile = null;
 	}
@@ -1108,7 +1124,7 @@
 					{:else if memberProfiles[viewingMemberDid]}
 						{@const mp = memberProfiles[viewingMemberDid]}
 						{@const loc = $locationStore}
-						{@const memberDist = (loc.lat && loc.lon && mp.geohashCell) ? distanceMeters(loc.lat, loc.lon, geohashCenter(mp.geohashCell).lat, geohashCenter(mp.geohashCell).lon) : null}
+						{@const memberDist = (() => { try { return (loc.lat && loc.lon && mp.geohashCell) ? distanceMeters(loc.lat, loc.lon, geohashCenter(mp.geohashCell).lat, geohashCenter(mp.geohashCell).lon) : null; } catch { return null; } })()}
 						<!-- svelte-ignore a11y_click_events_have_key_events -->
 						<!-- svelte-ignore a11y_no_static_element_interactions -->
 						<div class="profile-expand-tap" onclick={() => { viewingMemberDid = null; }}>
@@ -1119,20 +1135,23 @@
 								tags={mp.tags}
 								avatarUrl={mp.avatarUrl}
 								distance={memberDist}
-								groupsInCommon={1}
+								groupsInCommon={mp.sharedGroupCount}
+								groupNames={mp.sharedGroupNames}
 								expanded={true}
 							/>
 						</div>
+						{#if viewingMemberDid !== myDid}
 						<div class="card-actions">
 							<button class="small" onclick={() => handleDmFromGroup(viewingMemberDid!)}>message</button>
-							{#if isAdmin && viewingMemberDid !== myDid}
+							{#if isAdmin}
 								{@const viewedMember = groupMembers.find(m => m.did === viewingMemberDid)}
 								{#if viewedMember && viewedMember.role !== 'admin'}
 									<button class="small" onclick={() => handleTransferAdmin(viewingMemberDid!)}>make admin</button>
 								{/if}
-								<button class="small muted" onclick={() => handleKick(viewingMemberDid!)}>remove</button>
+								<button class="small danger-text" onclick={() => handleKick(viewingMemberDid!)}>remove</button>
 							{/if}
 						</div>
+						{/if}
 					{/if}
 				{:else}
 				{#if pickingNewAdmin}
@@ -1252,7 +1271,7 @@
 			</div>
 		{/if}
 
-		{#if (activeTab === 'chat' || !isGroupChat) && showingProfile && peerProfile && !isGroupChat}
+		{#if !isGroupChat && peerProfile && showingProfile}
 			<div class="card-body profile-view-body">
 				<!-- svelte-ignore a11y_click_events_have_key_events -->
 				<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1265,44 +1284,32 @@
 						avatarUrl={peerProfile.avatarUrl}
 						distance={peerDistance}
 						groupsInCommon={peerGroupsInCommon}
+						groupNames={peerGroupNames}
 						expanded={true}
 					/>
 				</div>
 			</div>
 		{:else if activeTab === 'chat' || !isGroupChat}
+			{#if !isGroupChat && peerProfile}
+				<!-- svelte-ignore a11y_click_events_have_key_events -->
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div class="compact-profile" onclick={() => { showingProfile = true; }}>
+					<ProfileExpandView
+						displayName={peerProfile.displayName}
+						age={peerProfile.age}
+						bio={peerProfile.bio}
+						tags={peerProfile.tags}
+						avatarUrl={peerProfile.avatarUrl}
+						distance={peerDistance}
+						groupsInCommon={peerGroupsInCommon}
+					/>
+				</div>
+			{/if}
 			<div class="card-body" bind:this={messagesEl}>
 				<div class="messages">
 					{#if !convo && !pendingPeer}
 						<p class="empty">conversation not found.</p>
 					{:else}
-						{#if !isGroupChat && peerProfile}
-							<!-- svelte-ignore a11y_click_events_have_key_events -->
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div class="profile-header" onclick={() => { showingProfile = true; }} style="cursor:pointer">
-								{#if peerProfile.avatarUrl}
-									<img src={peerProfile.avatarUrl} alt="" class="profile-avatar" />
-								{:else}
-									<div class="profile-avatar-placeholder">
-										<span>{peerProfile.displayName.charAt(0).toUpperCase()}</span>
-									</div>
-								{/if}
-								<div class="profile-info">
-									<span class="profile-name">
-										{peerProfile.displayName}{#if peerProfile.age}, {peerProfile.age}{/if}
-									</span>
-									{#if peerProfile.bio}
-										<span class="profile-bio">{peerProfile.bio}</span>
-									{/if}
-									{#if peerProfile.tags.length > 0}
-										<div class="profile-tags">
-											{#each peerProfile.tags as tag}
-												<span class="profile-tag">{tag}</span>
-											{/each}
-										</div>
-									{/if}
-								</div>
-							</div>
-						{/if}
 						{#if isGroupChat}
 							<div class="system-msg">{isAdmin ? 'you created the group' : (convo?.peerName ?? '') + ' was created'}</div>
 						{/if}
@@ -1538,70 +1545,12 @@
 	.tab-bar .tab {
 		min-height: calc(48px - 1px);
 	}
-	/* Profile header (DM) */
-	.profile-header {
-		display: flex;
-		gap: 12px;
-		padding: 12px 0 16px;
-		margin-bottom: 8px;
+	/* Compact profile card (DM, sits between header and messages) */
+	.compact-profile {
+		padding: 14px 16px;
 		border-bottom: 1px solid var(--border);
-	}
-	.profile-avatar {
-		width: 56px;
-		height: 56px;
-		border-radius: 2px;
-		object-fit: cover;
+		cursor: pointer;
 		flex-shrink: 0;
-	}
-	.profile-avatar-placeholder {
-		width: 56px;
-		height: 56px;
-		border-radius: 2px;
-		background: var(--bg-surface);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-	}
-	.profile-avatar-placeholder span {
-		font-size: 22px;
-		color: var(--text-tertiary);
-		font-weight: 300;
-	}
-	.profile-info {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		min-width: 0;
-	}
-	.profile-name {
-		font-size: 14px;
-		color: var(--text);
-		font-weight: 500;
-	}
-	.profile-bio {
-		font-size: 13px;
-		color: var(--text-muted);
-		line-height: 1.4;
-	}
-	.profile-tags {
-		display: flex;
-		flex-wrap: nowrap;
-		gap: 4px;
-		overflow-x: auto;
-		scrollbar-width: none;
-	}
-	.profile-tags::-webkit-scrollbar {
-		display: none;
-	}
-	.profile-tag {
-		font-size: 11px;
-		color: var(--text-muted);
-		border: 1px solid var(--border);
-		padding: 2px 8px;
-		line-height: 1.3;
-		flex-shrink: 0;
-		white-space: nowrap;
 	}
 	/* Message area */
 	.card-body {
@@ -1745,6 +1694,10 @@
 		display: flex;
 		gap: 8px;
 		margin-top: 10px;
+	}
+	.danger-text {
+		color: var(--danger);
+		border-color: transparent;
 	}
 	/* Link settings */
 	.link-settings-toggle {

@@ -199,7 +199,12 @@ export async function initChat(): Promise<void> {
 	if (unsubMessage) unsubMessage();
 	unsubMessage = onMessage(async (data) => {
 		if (data.type === 'message') {
-			await handleIncomingMessage(data);
+			if (data.ciphertext) {
+				await handleIncomingMessage(data);
+			} else {
+				// Bare notification (e.g. auto-accepted DM) — trigger poll to pick up any new messages
+				forcePoll();
+			}
 		}
 		if (data.type === 'sealed_message') {
 			await handleIncomingSealedMessage(data);
@@ -251,6 +256,15 @@ export async function initChat(): Promise<void> {
 			// (re-triggers token exchange naturally, avoids stale delivery tokens)
 			resetSealedSender(data.groupId);
 			window.dispatchEvent(new CustomEvent('dm-accepted', {
+				detail: { groupId: data.groupId }
+			}));
+		}
+		if (data.type === 'dm_reconnected') {
+			// Peer requested to chat again after leaving — just unmark left/peerLeft
+			// Don't reset sealed sender (only the sender side does that via dm_accepted)
+			unmarkConversationLeft(data.groupId);
+			unmarkConversationPeerLeft(data.groupId);
+			window.dispatchEvent(new CustomEvent('dm-reconnected', {
 				detail: { groupId: data.groupId }
 			}));
 		}

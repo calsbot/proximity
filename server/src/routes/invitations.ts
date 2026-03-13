@@ -95,10 +95,11 @@ invitationRoutes.post('/dm', async (c) => {
 		if (senderWs) {
 			senderWs.send(JSON.stringify({ type: 'dm_accepted', groupId: body.groupId }));
 		}
-		// Notify recipient of the new message
+		// Notify recipient — use dm_reconnected so their client unmarks left/peerLeft
+		// (NOT dm_accepted which resets sealed sender and causes ratchet desync)
 		const recipientWs = wsClients.get(body.recipientDid);
 		if (recipientWs) {
-			recipientWs.send(JSON.stringify({ type: 'message', groupId: body.groupId }));
+			recipientWs.send(JSON.stringify({ type: 'dm_reconnected', groupId: body.groupId }));
 		}
 		return c.json({ ok: true, id, autoAccepted: true });
 	}

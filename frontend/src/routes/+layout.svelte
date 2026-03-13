@@ -9,7 +9,7 @@
 	import { identityStore, initIdentitySync, broadcastIdentityChange, cacheIdentityInSession, restoreIdentityFromSession, requestIdentityFromTabs } from '$lib/stores/identity';
 	import { conversationsStore } from '$lib/stores/conversations';
 	import { requestCountStore } from '$lib/stores/requestCount';
-	import { register, getFlagStatus, getDMInvitations, listPendingInvites, listMyAdminJoinRequests } from '$lib/api';
+	import { register, getProfile, getFlagStatus, getDMInvitations, listPendingInvites, listMyAdminJoinRequests } from '$lib/api';
 	import { initChat } from '$lib/services/chat';
 	import { initNotifications } from '$lib/services/notifications';
 	import { wsStatus } from '$lib/services/websocket';
@@ -66,9 +66,20 @@
 				cacheIdentityInSession(identity);
 			}
 			if (identity) {
-				await ensureRegistered(identity);
-				cacheIdentityInSession(identity);
-				identityStore.set({ identity, loading: false, error: null });
+				const registered = await ensureRegistered(identity);
+				if (!registered) {
+					// Server doesn't have this profile — send to setup to pick a name
+					identityStore.set({ identity: null, loading: false, error: null });
+					const path = page.url.pathname;
+					if (!path.startsWith('/setup') && !path.startsWith('/invite')) {
+						checked = true;
+						goto('/setup');
+						return;
+					}
+				} else {
+					cacheIdentityInSession(identity);
+					identityStore.set({ identity, loading: false, error: null });
+				}
 			} else {
 				// Try to get identity from another tab
 				requestIdentityFromTabs();
@@ -85,8 +96,18 @@
 				// Check if another tab provided it
 				const fromTab = restoreIdentityFromSession();
 				if (fromTab) {
-					await ensureRegistered(fromTab);
-					identityStore.set({ identity: fromTab, loading: false, error: null });
+					const registered = await ensureRegistered(fromTab);
+					if (registered) {
+						identityStore.set({ identity: fromTab, loading: false, error: null });
+					} else {
+						identityStore.set({ identity: null, loading: false, error: null });
+						const path = page.url.pathname;
+						if (!path.startsWith('/setup') && !path.startsWith('/invite')) {
+							checked = true;
+							goto('/setup');
+							return;
+						}
+					}
 				} else {
 					identityStore.set({ identity: null, loading: false, error: null });
 					// No identity — redirect to setup unless already there
@@ -129,17 +150,30 @@
 
 	/**
 	 * Ensure the identity is registered on the server (re-registers if DB was wiped).
+	 * If server has no profile for this DID, return false so caller can redirect to setup.
 	 */
-	async function ensureRegistered(identity: Identity): Promise<void> {
+	async function ensureRegistered(identity: Identity): Promise<boolean> {
 		try {
-			await register(
-				identity.did,
-				'user',
-				encodeBase64(identity.publicKey),
-				encodeBase64(identity.boxPublicKey)
-			);
-		} catch {
-			// Non-fatal — server might already know us
+			const profile = await getProfile(identity.did);
+			// Profile exists — update keys in case they changed
+			try {
+				await register(
+					identity.did,
+					profile.displayName,
+					encodeBase64(identity.publicKey),
+					encodeBase64(identity.boxPublicKey)
+				);
+			} catch {}
+			return true;
+		} catch (e) {
+			// Distinguish 404 (profile missing) from network errors (server down)
+			const msg = e instanceof Error ? e.message : '';
+			if (msg.includes('404') || msg.toLowerCase().includes('not found')) {
+				// Profile doesn't exist — need to go through setup
+				return false;
+			}
+			// Network error — assume we're registered, chat will reconnect later
+			return true;
 		}
 	}
 </script>

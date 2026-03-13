@@ -32,11 +32,22 @@
 		error = '';
 
 		try {
-			// Guard: don't overwrite an existing identity (e.g. created in another tab)
+			// If identity already exists in storage (e.g. server DB wiped but keys remain),
+			// re-register with the entered display name instead of generating new keys
 			const existing = await loadIdentityFromStorage();
 			if (existing) {
+				await register(
+					existing.did,
+					displayName.trim(),
+					encodeBase64(existing.publicKey),
+					encodeBase64(existing.boxPublicKey)
+				);
 				cacheIdentityInSession(existing);
 				identityStore.set({ identity: existing, loading: false, error: null });
+				broadcastIdentityChange();
+				if (wantsUpdates && email.trim()) {
+					subscribeNewsletter(email.trim(), displayName.trim()).catch(() => {});
+				}
 				const params = new URLSearchParams(window.location.search);
 				const redirect = params.get('return') ?? params.get('redirect');
 				goto(redirect?.startsWith('/') ? redirect : '/grid');

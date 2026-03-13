@@ -320,7 +320,7 @@
 					<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
 					{uploading ? 'uploading...' : 'upload photo'}
 				</label>
-				<p class="text-caption">your photo is encrypted locally before&nbsp;upload.</p>
+				<p class="text-caption">your photo is encrypted locally before upload</p>
 			</div>
 
 			<div class="fields">
@@ -356,7 +356,7 @@
 							placeholder={tags.length === 0 ? 'pronouns, interests, looking for...' : ''}
 						/>
 					</div>
-					<span class="text-caption">press enter or comma to add. anything goes.</span>
+					<span class="text-caption">press enter or comma to add</span>
 				</div>
 
 				<div class="save-status">
@@ -372,25 +372,30 @@
 				<button class="btn-primary" onclick={handleBackup}>
 					{backupDownloaded ? 'downloaded!' : 'back up profile'}
 				</button>
-				<span class="text-caption">Save your identity file. It can't be recovered if&nbsp;lost.</span>
+				<span class="text-caption">save your identity file — it can't be recovered if lost</span>
 			</div>
+		</div>
+	</div>
+
+	<!-- Encrypted albums -->
+	<div class="card">
+		<div class="card-header">
+			<span class="title">encrypted albums</span>
+			<span class="coming-soon">coming soon</span>
 		</div>
 	</div>
 
 	<!-- Email updates -->
 	<div class="card">
-		<div class="card-body">
+		<div class="card-body email-section">
 			<label class="checkbox-row">
 				<input type="checkbox" bind:checked={wantsUpdates} />
 				<span>send me project updates</span>
 			</label>
 			{#if wantsUpdates}
-				<label>
-					<span class="info-label">email</span>
-					<input type="email" bind:value={updateEmail} placeholder="you@example.com" />
-				</label>
-				<p class="info-note" style="margin-top: 8px; border-top: none; padding-top: 0;">never linked to your account.</p>
-				<button class="btn-primary" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
+				<input type="email" bind:value={updateEmail} placeholder="you@example.com" class="email-input" />
+				<span class="text-caption">never linked to your account</span>
+				<button class="btn-primary small" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
 					{subscribing ? 'subscribing...' : subscribed ? 'subscribed!' : 'subscribe'}
 				</button>
 			{/if}
@@ -400,7 +405,6 @@
 	<!-- Identity & backup -->
 	<div class="card">
 		<button class="card-header toggle-header" onclick={() => showIdentity = !showIdentity}>
-			<span class="dot" class:green={!!identity.identity}></span>
 			<span class="title">identity</span>
 			<span class="chevron">{showIdentity ? '−' : '+'}</span>
 		</button>
@@ -528,6 +532,11 @@
 		margin-left: auto;
 		color: var(--text-muted);
 		font-size: 14px;
+	}
+	.coming-soon {
+		margin-left: auto;
+		color: var(--text-tertiary);
+		font-size: 12px;
 	}
 	.title {
 		color: var(--text-muted);
@@ -702,6 +711,16 @@
 	.tag-input::placeholder {
 		color: var(--text-muted);
 		opacity: 0.6;
+	}
+	.email-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.email-input {
+		min-height: 40px;
+		padding: 8px 12px;
+		font-size: 14px;
 	}
 	.checkbox-row {
 		flex-direction: row;

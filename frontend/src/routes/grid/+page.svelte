@@ -433,9 +433,9 @@
 
 		{#if !hasLoc && !loading && !locationError}
 			<div class="location-prompt">
-				<p class="prompt-title">share your location to see who's&nbsp;nearby.</p>
+				<p class="prompt-title">share your location to see who's&nbsp;nearby</p>
 				<button onclick={enableLocation}>enable location</button>
-				<p class="prompt-detail">Your location is approximate. We add nearby areas to prevent exact positioning.</p>
+				<p class="prompt-detail">we add nearby areas to prevent exact positioning</p>
 			</div>
 		{:else if loading}
 			<p class="status">scanning...</p>
@@ -496,7 +496,7 @@
 		{/if}
 	</div>
 
-	<p class="privacy-hint">distances are approximate to protect everyone's&nbsp;privacy.</p>
+	<p class="privacy-hint">distances are approximate</p>
 </div>
 
 <style>

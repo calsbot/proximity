@@ -131,7 +131,10 @@
 				}
 			}
 			invProfiles = { ...invProfiles, [inv.senderDid]: { displayName: p.displayName, bio, age, tags, avatarUrl } };
-		} catch {}
+		} catch {
+			// Fallback: use data from invitation itself
+			invProfiles = { ...invProfiles, [inv.senderDid]: { displayName: inv.senderDisplayName, bio: '', age: invAges[inv.senderDid] ?? null, tags: [], avatarUrl: invAvatarUrls[inv.senderDid] ?? null } };
+		}
 		loadingInvProfile = null;
 	}
 
@@ -434,49 +437,69 @@
 		{:else}
 			<!-- DM invitations -->
 			{#each visibleDmInvites as inv}
-				<div class="dm-invite-row" class:expanded={expandedInvDid === inv.senderDid}>
-					<!-- svelte-ignore a11y_click_events_have_key_events -->
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div class="dm-invite-top-row" onclick={() => toggleInvProfile(inv)}>
-						{#if invAvatarUrls[inv.senderDid]}
-							<img src={invAvatarUrls[inv.senderDid]} alt="" class="inv-avatar" />
+				{#if expandedInvDid === inv.senderDid}
+					<div class="dm-invite-expanded-wrap">
+						{#if loadingInvProfile === inv.senderDid || !invProfiles[inv.senderDid]}
+							<div class="request-row">
+								<div class="request-row-left" onclick={() => { expandedInvDid = null; }}>
+									{#if invAvatarUrls[inv.senderDid]}
+										<img src={invAvatarUrls[inv.senderDid]} alt="" class="request-avatar" />
+									{:else}
+										<div class="request-avatar-placeholder">
+											<span>{inv.senderDisplayName.charAt(0).toUpperCase()}</span>
+										</div>
+									{/if}
+									<div class="request-info">
+										<span class="name">{inv.senderDisplayName}</span>
+										<span class="preview">loading...</span>
+									</div>
+								</div>
+							</div>
 						{:else}
-							<div class="inv-avatar-placeholder">
-								<span>{inv.senderDisplayName.charAt(0).toUpperCase()}</span>
+							<!-- svelte-ignore a11y_click_events_have_key_events -->
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<div class="profile-expand-tap" onclick={() => { expandedInvDid = null; }}>
+								<ProfileExpandView
+									displayName={invProfiles[inv.senderDid].displayName}
+									age={invProfiles[inv.senderDid].age}
+									bio={invProfiles[inv.senderDid].bio}
+									tags={invProfiles[inv.senderDid].tags}
+									avatarUrl={invProfiles[inv.senderDid].avatarUrl}
+									expanded={true}
+								/>
+							</div>
+							<div class="dm-invite-msg-preview">
+								<span>sent you a message</span>
+							</div>
+							<div class="dm-invite-actions-full">
+								<button onclick={() => handleDmAccept(inv)}>accept</button>
+								<button class="muted" onclick={() => handleDmIgnore(inv.id)}>ignore</button>
 							</div>
 						{/if}
-						<div class="dm-invite-content">
-							<span class="name">
-								{inv.senderDisplayName}{#if invAges[inv.senderDid]}, {invAges[inv.senderDid]}{/if}
-							</span>
-							<span class="preview">sent you a message &middot; {timeAgo(inv.createdAt)}</span>
-						</div>
 					</div>
-					{#if expandedInvDid === inv.senderDid}
-						<div class="dm-invite-expanded">
-							{#if loadingInvProfile === inv.senderDid}
-								<span class="card-loading">loading...</span>
-							{:else if invProfiles[inv.senderDid]}
-								<!-- svelte-ignore a11y_click_events_have_key_events -->
-								<!-- svelte-ignore a11y_no_static_element_interactions -->
-								<div class="profile-expand-tap" onclick={() => { expandedInvDid = null; }}>
-									<ProfileExpandView
-										displayName={invProfiles[inv.senderDid].displayName}
-										age={invProfiles[inv.senderDid].age}
-										bio={invProfiles[inv.senderDid].bio}
-										tags={invProfiles[inv.senderDid].tags}
-										avatarUrl={invProfiles[inv.senderDid].avatarUrl}
-										compact={true}
-									/>
+				{:else}
+					<div class="request-row">
+						<!-- svelte-ignore a11y_click_events_have_key_events -->
+						<!-- svelte-ignore a11y_no_static_element_interactions -->
+						<div class="request-row-left" onclick={() => toggleInvProfile(inv)}>
+							{#if invAvatarUrls[inv.senderDid]}
+								<img src={invAvatarUrls[inv.senderDid]} alt="" class="request-avatar" />
+							{:else}
+								<div class="request-avatar-placeholder">
+									<span>{inv.senderDisplayName.charAt(0).toUpperCase()}</span>
 								</div>
 							{/if}
+							<div class="request-info">
+								<span class="name">{inv.senderDisplayName}</span>
+								<span class="preview">sent you a message &middot; {timeAgo(inv.createdAt)}</span>
+							</div>
 						</div>
-					{/if}
-					<div class="invite-actions">
-						<button class="small" onclick={() => handleDmAccept(inv)}>accept</button>
-						<button class="small muted" onclick={() => handleDmIgnore(inv.id)}>ignore</button>
+						<div class="request-actions">
+							<button class="small" onclick={() => handleDmAccept(inv)}>accept</button>
+							<button class="small muted" onclick={() => handleDmIgnore(inv.id)}>ignore</button>
+						</div>
 					</div>
-				</div>
+				{/if}
 			{/each}
 			{#if !dmInvitesExpanded && hiddenDmCount > 0}
 				<button class="show-more" onclick={() => dmInvitesExpanded = true}>
@@ -512,8 +535,8 @@
 
 			<!-- Join requests (for groups you admin) -->
 			{#each joinRequests as req}
-				<div class="group-invite-row">
-					<div class="group-invite-content">
+				<div class="request-row">
+					<div class="request-info">
 						<span class="name">
 							{req.requesterName}
 							<span class="group-tag">join request</span>
@@ -522,9 +545,9 @@
 							wants to join {req.groupName} &middot; {timeAgo(req.createdAt)}
 						</span>
 					</div>
-					<div class="invite-actions">
+					<div class="request-actions">
 						<button class="small" onclick={() => handleJoinRequest(req, 'approve')}>accept</button>
-						<button class="small muted" onclick={() => handleJoinRequest(req, 'deny')}>deny</button>
+						<button class="small muted" onclick={() => handleJoinRequest(req, 'deny')}>ignore</button>
 					</div>
 				</div>
 			{/each}
@@ -796,32 +819,9 @@
 		font-weight: 600;
 	}
 
-	/* Invitation avatars */
-	.inv-avatar {
-		width: 44px;
-		height: 44px;
-		border-radius: 2px;
-		object-fit: cover;
-		flex-shrink: 0;
-	}
-	.inv-avatar-placeholder {
-		width: 44px;
-		height: 44px;
-		border-radius: 2px;
-		background: var(--bg-surface);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-	}
-	.inv-avatar-placeholder span {
-		font-size: 18px;
-		color: var(--text-tertiary);
-		font-weight: 300;
-	}
 
-	/* DM Invitation rows */
-	.dm-invite-row {
+	/* Unified request rows (DM requests, group join requests) */
+	.request-row {
 		display: flex;
 		align-items: center;
 		gap: 12px;
@@ -829,18 +829,61 @@
 		min-height: 48px;
 		border-bottom: 1px solid var(--border);
 	}
-	.dm-invite-row.expanded {
-		flex-direction: column;
-		align-items: stretch;
+	.request-row:last-of-type {
+		border-bottom: none;
 	}
-	.dm-invite-top-row {
+	.request-row-left {
 		display: flex;
 		align-items: center;
 		gap: 12px;
+		flex: 1;
+		min-width: 0;
 		cursor: pointer;
 	}
-	.dm-invite-expanded {
-		padding: 12px 0 8px;
+	.request-avatar {
+		width: 44px;
+		height: 44px;
+		border-radius: 4px;
+		object-fit: cover;
+		flex-shrink: 0;
+	}
+	.request-avatar-placeholder {
+		width: 44px;
+		height: 44px;
+		border-radius: 4px;
+		background: var(--bg-surface);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+	.request-avatar-placeholder span {
+		font-size: 18px;
+		color: var(--text-tertiary);
+		font-weight: 300;
+	}
+	.request-info {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.request-actions,
+	.invite-actions {
+		display: flex;
+		gap: 8px;
+		flex-shrink: 0;
+		align-items: center;
+	}
+
+	/* DM request expanded (full profile inline) */
+	.dm-invite-expanded-wrap {
+		border-bottom: 1px solid var(--border);
+		padding-bottom: 4px;
+	}
+	.dm-invite-expanded-wrap :global(.pev-full-info) {
+		padding: 16px 16px 0;
 	}
 	.profile-expand-tap {
 		cursor: pointer;
@@ -848,21 +891,24 @@
 	.card-loading {
 		font-size: 13px;
 		color: var(--text-muted);
+		padding: 16px;
+		display: block;
 	}
-	.dm-invite-row:last-of-type {
-		border-bottom: none;
+	.dm-invite-msg-preview {
+		padding: 8px 16px 0;
 	}
-	.dm-invite-content {
+	.dm-invite-msg-preview span {
+		color: var(--text-muted);
+		font-size: 13px;
+		font-style: italic;
+	}
+	.dm-invite-actions-full {
+		display: flex;
+		gap: 10px;
+		padding: 12px 16px;
+	}
+	.dm-invite-actions-full button {
 		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-	.dm-invite-top {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
 	}
 
 	/* Group invitation rows */
@@ -883,16 +929,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-	}
-	.group-invite-top {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-	.invite-actions {
-		display: flex;
-		gap: 8px;
-		flex-shrink: 0;
 	}
 
 	/* Show more button */
