@@ -522,10 +522,17 @@
 
 			{#if showFilter}
 				<div class="filter-dropdown">
+					{#if committedTags.size > 0}
+						<div class="tags-row">
+							{#each Array.from(committedTags) as tag}
+								<button class="tag-pill active" onclick={() => removeTag(tag)}>{tag} ×</button>
+							{/each}
+						</div>
+					{/if}
 					<input
 						type="text"
 						class="filter-search"
-						placeholder="search tags..."
+						placeholder={committedTags.size > 0 ? 'add another tag...' : 'search tags...'}
 						bind:value={tagInput}
 						onkeydown={handleTagKeydown}
 					/>

@@ -11,7 +11,11 @@ const config = {
 			fallback: 'index.html', // SPA fallback for client-side routing
 			precompress: false,
 			strict: true
-		})
+		}),
+		version: {
+			// SvelteKit will poll this and set `$app/stores`.updated when it changes
+			pollInterval: 60000 // check every 60s
+		}
 	}
 };
 

@@ -3,8 +3,9 @@
 	import { onMount } from 'svelte';
 	import { loadIdentityFromStorage } from '$lib/crypto/identity';
 	import type { Identity } from '$lib/crypto/identity';
-	import { goto } from '$app/navigation';
+	import { goto, afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
+	import { updated } from '$app/stores';
 	import { encodeBase64 } from '$lib/crypto/util';
 	import { identityStore, initIdentitySync, broadcastIdentityChange, cacheIdentityInSession, restoreIdentityFromSession, requestIdentityFromTabs } from '$lib/stores/identity';
 	import { conversationsStore } from '$lib/stores/conversations';
@@ -123,6 +124,13 @@
 			identityStore.set({ identity: null, loading: false, error: 'failed to load identity' });
 		}
 		checked = true;
+
+		// Auto-reload when a new version is deployed — reload on next navigation
+		afterNavigate(() => {
+			if ($updated) {
+				window.location.reload();
+			}
+		});
 
 		// Check if current user is flagged + count invitations
 		const id = $identityStore.identity;
