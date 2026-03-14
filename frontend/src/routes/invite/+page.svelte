@@ -59,10 +59,13 @@
 			if (existing) {
 				cacheIdentityInSession(existing);
 				identityStore.set({ identity: existing, loading: false, error: null });
-				// myDid will update reactively, but call handleJoin directly with the did
 				joining = true;
 				error = '';
 				try {
+					// Ensure registered on server
+					try {
+						await register(existing.did, existing.did.slice(-8), encodeBase64(existing.publicKey), encodeBase64(existing.boxPublicKey));
+					} catch {}
 					await joinGroupViaInvite(groupId, existing.did, inviteKey);
 					getOrCreateConversation(groupId, '', groupName, '', null, true);
 					goto(`/chat/${encodeURIComponent(groupId)}`);
@@ -77,11 +80,18 @@
 	}
 
 	async function handleJoin() {
-		const did = myDid;
+		const identity = $identityStore.identity;
+		const did = identity?.did;
 		if (!did || !groupId || !inviteKey) return;
 		joining = true;
 		error = '';
 		try {
+			// Ensure registered on server (may have been skipped on invite page)
+			if (identity) {
+				try {
+					await register(did, did.slice(-8), encodeBase64(identity.publicKey), encodeBase64(identity.boxPublicKey));
+				} catch {}
+			}
 			await joinGroupViaInvite(groupId, did, inviteKey);
 			getOrCreateConversation(groupId, '', groupName, '', null, true);
 			goto(`/chat/${encodeURIComponent(groupId)}`);
