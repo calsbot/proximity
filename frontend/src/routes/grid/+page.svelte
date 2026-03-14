@@ -353,8 +353,10 @@
 			const resp = await discoverProfiles(cells, myDid ?? undefined, SERVER_PAGE_SIZE, 0);
 			serverTotal = resp.total;
 			serverOffset = resp.profiles.length;
+			console.log('[grid] Discovered', resp.profiles.length, 'profiles of', resp.total, 'total');
 			allProfiles = enrichProfiles(resp.profiles);
-		} catch {
+		} catch (e) {
+			console.error('[grid] fetchProfiles failed:', e);
 			allProfiles = [];
 		} finally {
 			loading = false;

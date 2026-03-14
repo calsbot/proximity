@@ -66,25 +66,36 @@ if (isProduction) {
 			return c.notFound();
 		}
 
+		// Cache immutable hashed assets forever, no-cache for HTML
+		const isImmutable = urlPath.includes('/_app/immutable/');
+
 		// Try to serve the exact file
 		const filePath = join(STATIC_DIR, urlPath === '/' ? 'index.html' : urlPath);
 		const file = Bun.file(filePath);
 		if (await file.exists()) {
-			return new Response(file);
+			const headers: Record<string, string> = {};
+			if (isImmutable) {
+				headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+			} else if (filePath.endsWith('.html')) {
+				headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+			}
+			return new Response(file, { headers });
 		}
 
 		// Try with .html extension
 		const htmlPath = filePath + '.html';
 		const htmlFile = Bun.file(htmlPath);
 		if (await htmlFile.exists()) {
-			return new Response(htmlFile);
+			return new Response(htmlFile, {
+				headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate' }
+			});
 		}
 
 		// SPA fallback — serve index.html for client-side routing
 		const indexFile = Bun.file(join(STATIC_DIR, 'index.html'));
 		if (await indexFile.exists()) {
 			return new Response(indexFile, {
-				headers: { 'Content-Type': 'text/html' }
+				headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache, no-store, must-revalidate' }
 			});
 		}
 
