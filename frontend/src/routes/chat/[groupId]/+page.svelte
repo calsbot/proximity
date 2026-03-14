@@ -509,23 +509,28 @@
 		const text = input.trim();
 		input = '';
 		sending = true;
-		const wasFirstContact = !isGroupChat && (messages.length === 0);
+		// If replying to an invitation, mark accepted BEFORE sending so sendChatMessage
+		// doesn't treat this as first contact and send another invitation back
+		const isReplyToInvite = !!pendingInvitationId;
+		if (isReplyToInvite) {
+			markDmAccepted(groupId);
+		}
+		const wasFirstContact = !isGroupChat && !convo?.dmAccepted && !isReplyToInvite;
 		try {
 			await ensureConversation();
 			if (isGroupChat) {
 				await sendGroupMessage(groupId, text, groupMembers.map(m => m.did));
 			} else {
-				await sendChatMessage(groupId, text);
-				if (wasFirstContact) outgoingInviteSent = true;
+				const result = await sendChatMessage(groupId, text);
+				if (wasFirstContact && !result?.autoAccepted) outgoingInviteSent = true;
 			}
-			// Accept DM invitation on first reply
-			if (pendingInvitationId) {
-				const invId = pendingInvitationId;
+			// Accept DM invitation on server
+			if (isReplyToInvite) {
+				const invId = pendingInvitationId!;
 				pendingInvitationId = null;
 				acceptDMInvitation(invId).then(() => {
 					unmarkConversationLeft(groupId);
 					unmarkConversationPeerLeft(groupId);
-					markDmAccepted(groupId);
 					resetSealedSender(groupId);
 				}).catch(e => console.error('[invitation] accept failed:', e));
 			}

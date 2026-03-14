@@ -571,6 +571,10 @@ export function declineDMInvitation(id: string) {
 	});
 }
 
+export function checkDmAccepted(groupId: string) {
+	return request<{ accepted: boolean }>(`/invitations/dm-accepted?groupId=${encodeURIComponent(groupId)}`);
+}
+
 export function leaveDM(groupId: string, did: string) {
 	return request<{ ok: boolean }>('/invitations/dm-leave', {
 		method: 'POST',

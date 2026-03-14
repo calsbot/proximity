@@ -99,7 +99,12 @@ invitationRoutes.post('/dm', async (c) => {
 		// (NOT dm_accepted which resets sealed sender and causes ratchet desync)
 		const recipientWs = wsClients.get(body.recipientDid);
 		if (recipientWs) {
-			recipientWs.send(JSON.stringify({ type: 'dm_reconnected', groupId: body.groupId }));
+			recipientWs.send(JSON.stringify({
+				type: 'dm_reconnected',
+				groupId: body.groupId,
+				senderDid: body.senderDid,
+				senderDisplayName: body.senderDisplayName,
+			}));
 		}
 		return c.json({ ok: true, id, autoAccepted: true });
 	}
@@ -315,6 +320,22 @@ invitationRoutes.get('/dm-status', async (c) => {
 	}).from(dmLeaves).where(eq(dmLeaves.groupId, groupId)).all();
 
 	return c.json(leaves);
+});
+
+/**
+ * GET /invitations/dm-accepted?groupId=...
+ * Check if a DM invitation has been accepted for a given groupId.
+ */
+invitationRoutes.get('/dm-accepted', async (c) => {
+	const groupId = c.req.query('groupId');
+	if (!groupId) return c.json({ error: 'groupId required' }, 400);
+
+	const accepted = await db.select({ id: dmInvitations.id })
+		.from(dmInvitations)
+		.where(and(eq(dmInvitations.groupId, groupId), eq(dmInvitations.status, 'accepted')))
+		.limit(1).get();
+
+	return c.json({ accepted: !!accepted });
 });
 
 /**

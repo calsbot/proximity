@@ -67,16 +67,29 @@ import {
 	sendSealedGroupMessage as apiSendSealedGroupMessage,
 	sendDMInvitation,
 	checkCsam,
+	listGroups,
+	checkDmAccepted,
 } from '$lib/api';
 import { connect, onMessage, wsSend, disconnect } from './websocket';
 import { requestCountStore } from '$lib/stores/requestCount';
 
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let lastPollTime: string | null = null;
+// Persist dedup state across HMR (module re-evaluation resets module-level vars)
+const _g = globalThis as any;
+if (!_g.__chatPersist) _g.__chatPersist = {
+	processedIds: new Set<string>(),
+	autoCreatedAt: new Map<string, string>(),
+	lastPollTime: null as string | null,
+};
+// Clean up old handlers from previous HMR cycle
+if (_g.__chatPollTimer) { clearTimeout(_g.__chatPollTimer); _g.__chatPollTimer = null; }
+if (_g.__chatUnsub) { _g.__chatUnsub(); _g.__chatUnsub = null; }
+
+let pollTimer: ReturnType<typeof setTimeout> | null = null;
+let lastPollTime: string | null = _g.__chatPersist.lastPollTime;
 let initialized = false;
 let unsubMessage: (() => void) | null = null;
-// Track server message IDs we've already processed (dedup for gte polling)
-const processedServerIds = new Set<string>();
+const processedServerIds: Set<string> = _g.__chatPersist.processedIds;
+const autoCreatedAt: Map<string, string> = _g.__chatPersist.autoCreatedAt;
 
 // --- Pending sealed group messages (retry on key_rotation) ---
 // When a sealed group message arrives but can't be decrypted (sender key not yet available),
@@ -192,6 +205,7 @@ export async function initChat(): Promise<void> {
 	// Start polling from after the latest message we already have
 	if (latestTimestamp) {
 		lastPollTime = latestTimestamp;
+		_g.__chatPersist.lastPollTime = latestTimestamp;
 	}
 
 	connect(state.identity.did);
@@ -267,6 +281,38 @@ export async function initChat(): Promise<void> {
 			unmarkConversationLeft(data.groupId);
 			unmarkConversationPeerLeft(data.groupId);
 			markDmAccepted(data.groupId);
+			// If conversation doesn't exist yet (auto-accepted first DM), create it
+			const convos = get(conversationsStore);
+			if (!convos.find(c => c.groupId === data.groupId) && data.senderDid) {
+				try {
+					const senderProfile = await getProfile(data.senderDid);
+					if (senderProfile.boxPublicKey) {
+						const id = get(identityStore);
+						if (id.identity) {
+							const keys = await deriveConversationKeys(
+								id.identity.boxSecretKey,
+								id.identity.boxPublicKey,
+								id.identity.did,
+								decodeBase64(senderProfile.boxPublicKey),
+								data.senderDid
+							);
+							getOrCreateConversation(
+								data.groupId,
+								data.senderDid,
+								data.senderDisplayName || senderProfile.displayName || data.senderDid.slice(-8),
+								senderProfile.boxPublicKey,
+								keys
+							);
+							markDmAccepted(data.groupId);
+							// Don't set autoCreatedAt — the first message was stored on server
+							// before this local auto-create, and we need to receive it
+							console.log('[chat] Auto-created DM from dm_reconnected for:', data.senderDid.slice(-8));
+						}
+					}
+				} catch (e) {
+					console.warn('[chat] Failed to auto-create DM from dm_reconnected:', e);
+				}
+			}
 			window.dispatchEvent(new CustomEvent('dm-reconnected', {
 				detail: { groupId: data.groupId }
 			}));
@@ -325,6 +371,7 @@ export async function initChat(): Promise<void> {
 			}));
 		}
 	});
+	_g.__chatUnsub = unsubMessage;
 
 	// Poll for missed messages every 10 seconds
 	startPolling();
@@ -377,8 +424,9 @@ export async function startConversation(
 /**
  * Send a text message in a conversation (Double Ratchet E2EE).
  * First-contact DMs are routed through the invitation endpoint.
+ * Returns { autoAccepted: true } if invitation was auto-accepted (e.g. shared group).
  */
-export async function sendChatMessage(groupId: string, text: string): Promise<void> {
+export async function sendChatMessage(groupId: string, text: string): Promise<{ autoAccepted?: boolean }> {
 	const state = get(identityStore);
 	if (!state.identity) throw new Error('No identity');
 
@@ -401,7 +449,31 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 
 	// First-contact detection: DM not yet accepted → route through invitation flow.
 	// Uses dmAccepted flag (not message count) — survives stale IndexedDB from server resets.
-	const isFirstContact = !convo.isGroup && !convo.dmAccepted;
+	let isFirstContact = !convo.isGroup && !convo.dmAccepted;
+	// Double-check with server: if there's already an accepted invitation, don't re-send
+	if (isFirstContact) {
+		try {
+			const serverCheck = await checkDmAccepted(groupId);
+			if (serverCheck.accepted) {
+				console.log('[chat] Server says DM already accepted — skipping invitation flow');
+				markDmAccepted(groupId);
+				isFirstContact = false;
+				// Send the message via regular channel and signal auto-accepted to caller
+				// so it doesn't show "request sent" UI
+				await apiSendMessage({
+					groupId: encrypted.groupId,
+					senderDid: encrypted.senderDid,
+					recipientDid: encrypted.recipientDid,
+					epoch: encrypted.epoch,
+					ciphertext: encrypted.ciphertext,
+					nonce: encrypted.nonce,
+					dhPublicKey: encrypted.dhPublicKey,
+					previousCounter: encrypted.previousCounter,
+				});
+				return { autoAccepted: true };
+			}
+		} catch { /* network error — proceed with invitation */ }
+	}
 	console.log(`[chat] First-contact check: isGroup=${convo.isGroup} dmAccepted=${convo.dmAccepted} msgs=${convo.messages.length} → isFirstContact=${isFirstContact}`);
 	if (isFirstContact) {
 		try {
@@ -426,6 +498,7 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 			// If auto-accepted (users share a group), mark as accepted immediately
 			if (result && (result as any).autoAccepted) {
 				markDmAccepted(groupId);
+				return { autoAccepted: true };
 			}
 		} catch (e) {
 			const errMsg = e instanceof Error ? e.message : String(e);
@@ -528,6 +601,7 @@ export async function sendChatMessage(groupId: string, text: string): Promise<vo
 
 	// Track that we sent this epoch so polling won't try to decrypt it again
 	processedServerIds.add(`server-${encrypted.epoch}-${state.identity.did}`);
+	return {};
 }
 
 /**
@@ -992,10 +1066,54 @@ async function handleIncomingMessage(data: {
 					convo = convos.find(c => c.groupId === data.groupId);
 				}
 			} catch {
-				// Not a group — DM from unknown sender. Don't auto-create;
-				// the invitation flow handles DM creation on accept.
-				console.log('[chat] Ignoring DM from unknown sender — awaiting invitation acceptance:', data.senderDid.slice(-8));
-				return;
+				// Not a group — DM from unknown sender.
+				// Auto-create if sender shares a group with us OR has an accepted invitation.
+				try {
+					// Check if we share a group with this sender
+					const myGroups = await listGroups(state.identity!.did);
+					const sharesGroup = myGroups.some(g =>
+						g.members.some(m => m.did === data.senderDid)
+					);
+					// Also check if there's an accepted invitation for this groupId
+					let hasAcceptedInvitation = false;
+					if (!sharesGroup) {
+						try {
+							const result = await checkDmAccepted(data.groupId);
+							hasAcceptedInvitation = result.accepted;
+						} catch { /* ignore */ }
+					}
+					if (!sharesGroup && !hasAcceptedInvitation) {
+						console.log('[chat] Ignoring DM from unknown sender — awaiting invitation acceptance:', data.senderDid.slice(-8));
+						return;
+					}
+					const senderProfile = await getProfile(data.senderDid);
+					if (!senderProfile.boxPublicKey) {
+						console.log('[chat] Ignoring DM from unknown sender (no boxPublicKey):', data.senderDid.slice(-8));
+						return;
+					}
+					const keys = await deriveConversationKeys(
+						state.identity!.boxSecretKey,
+						state.identity!.boxPublicKey,
+						state.identity!.did,
+						decodeBase64(senderProfile.boxPublicKey),
+						data.senderDid
+					);
+					getOrCreateConversation(
+						data.groupId,
+						data.senderDid,
+						senderProfile.displayName || data.senderDid.slice(-8),
+						senderProfile.boxPublicKey,
+						keys
+					);
+					markDmAccepted(data.groupId);
+					autoCreatedAt.set(data.groupId, new Date().toISOString());
+					convos = get(conversationsStore);
+					convo = convos.find(c => c.groupId === data.groupId);
+					console.log('[chat] Auto-created DM conversation for group member:', data.senderDid.slice(-8));
+				} catch (e) {
+					console.log('[chat] Ignoring DM from unknown sender — awaiting invitation acceptance:', data.senderDid.slice(-8));
+					return;
+				}
 			}
 
 			if (!convo) {
@@ -1030,6 +1148,12 @@ async function handleIncomingMessage(data: {
 	// Don't process messages in conversations we've left — prevents ratchet desync
 	// (sealed messages bypass the server's dm_leaves check since groupId is hidden)
 	if (convo.left) {
+		return;
+	}
+
+	// Skip messages older than when we auto-created this DM — they're from a prior session
+	const createdTs = autoCreatedAt.get(data.groupId);
+	if (createdTs && data.createdAt && data.createdAt < createdTs) {
 		return;
 	}
 
@@ -1218,7 +1342,10 @@ async function handleIncomingMessage(data: {
 		if (data.id) processedServerIds.add(`srv-${data.id}`);
 		console.log(`[chat] Decrypted OK: "${plaintext.slice(0, 50)}"`);
 	} catch (e) {
-		console.error('[chat] Failed to decrypt message:', e, 'epoch=' + data.epoch);
+		// Mark as processed so we don't retry undecryptable messages on every poll
+		if (data.id) processedServerIds.add(`srv-${data.id}`);
+		processedServerIds.add(dedupId);
+		console.warn('[chat] Failed to decrypt message (will not retry):', (e as Error)?.message ?? e, 'epoch=' + data.epoch);
 	}
 }
 
@@ -1555,6 +1682,7 @@ function startPolling(): void {
 	async function pollLoop() {
 		await doPoll();
 		pollTimer = setTimeout(pollLoop, 10000);
+		_g.__chatPollTimer = pollTimer;
 	}
 	pollLoop();
 }
@@ -1600,11 +1728,13 @@ async function doPoll(): Promise<void> {
 
 		if (messages.length > 0) {
 			lastPollTime = messages[messages.length - 1].createdAt;
+			_g.__chatPersist.lastPollTime = lastPollTime;
 		}
 		if (sealed.length > 0) {
 			const lastSealed = sealed[sealed.length - 1].createdAt;
 			if (!lastPollTime || lastSealed > lastPollTime) {
 				lastPollTime = lastSealed;
+				_g.__chatPersist.lastPollTime = lastPollTime;
 			}
 		}
 	} catch (e) {
@@ -1990,15 +2120,18 @@ export async function handleMediaViewed(
  */
 export function destroyChat(): void {
 	if (pollTimer) {
-		clearInterval(pollTimer);
+		clearTimeout(pollTimer);
 		pollTimer = null;
+		_g.__chatPollTimer = null;
 	}
 	if (unsubMessage) {
 		unsubMessage();
 		unsubMessage = null;
+		_g.__chatUnsub = null;
 	}
 	initialized = false;
 	lastPollTime = null;
+	_g.__chatPersist.lastPollTime = null;
 	myGlobalDeliveryToken = null;
 	processedServerIds.clear();
 	disconnect();

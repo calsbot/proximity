@@ -54,6 +54,13 @@
 		return true;
 	});
 
+	// Must be called synchronously during component init (not after await)
+	afterNavigate(() => {
+		if ($updated) {
+			window.location.reload();
+		}
+	});
+
 	onMount(async () => {
 		initIdentitySync();
 
@@ -124,13 +131,6 @@
 			identityStore.set({ identity: null, loading: false, error: 'failed to load identity' });
 		}
 		checked = true;
-
-		// Auto-reload when a new version is deployed — reload on next navigation
-		afterNavigate(() => {
-			if ($updated) {
-				window.location.reload();
-			}
-		});
 
 		// Check if current user is flagged + count invitations
 		const id = $identityStore.identity;
