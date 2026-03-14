@@ -253,6 +253,11 @@ groupRoutes.post('/:id/invite', async (c) => {
 		return c.json({ error: 'Not a group member' }, 403);
 	}
 
+	// Only admins can invite
+	if (isMember.role !== 'admin') {
+		return c.json({ error: 'Only admins can invite members' }, 403);
+	}
+
 	// Check if already a member
 	const alreadyMember = await db.select()
 		.from(groupMembers)
@@ -545,6 +550,7 @@ groupRoutes.post('/:id/invite-link', async (c) => {
 		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)))
 		.get();
 	if (!member) return c.json({ error: 'Not a group member' }, 403);
+	if (member.role !== 'admin') return c.json({ error: 'Only admins can create invite links' }, 403);
 
 	const expiresAt = expiresInHours ? new Date(Date.now() + expiresInHours * 60 * 60 * 1000) : null;
 
