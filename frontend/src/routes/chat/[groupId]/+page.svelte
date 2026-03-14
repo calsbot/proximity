@@ -1183,7 +1183,7 @@
 						<span class="member-name">{member.displayName}</span>
 						<span class="member-role">{member.role ?? 'member'}</span>
 						{#if pickingNewAdmin && member.did !== myDid}
-							<button class="small pick-admin-btn" onclick={(e) => { e.stopPropagation(); handleTransferAndLeave(member.did); }}>make admin & leave</button>
+							<span class="small pick-admin-btn" role="button" tabindex="0" onclick={(e) => { e.stopPropagation(); handleTransferAndLeave(member.did); }} onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); handleTransferAndLeave(member.did); } }}>make admin & leave</span>
 						{/if}
 					</button>
 				{/each}
@@ -1225,12 +1225,14 @@
 					</div>
 				{/if}
 
-				<div class="invite-actions">
-					<button class="invite-btn" onclick={shareInvite}>send invitation</button>
-					<button class="invite-btn secondary" onclick={copyInviteLink}>
-						{inviteLinkCopied ? 'copied!' : 'copy link'}
-					</button>
-				</div>
+				{#if isAdmin}
+					<div class="invite-actions">
+						<button class="invite-btn" onclick={shareInvite}>send invitation</button>
+						<button class="invite-btn secondary" onclick={copyInviteLink}>
+							{inviteLinkCopied ? 'copied!' : 'copy link'}
+						</button>
+					</div>
+				{/if}
 
 				{#if isAdmin}
 					<button class="link-settings-toggle" onclick={() => showLinkSettings = !showLinkSettings}>

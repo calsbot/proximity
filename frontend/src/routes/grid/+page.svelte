@@ -671,7 +671,7 @@
 		margin-top: 0;
 	}
 	.grid-container {
-		overflow: visible;
+		overflow: visible !important;
 		border: none;
 		border-radius: 0;
 	}

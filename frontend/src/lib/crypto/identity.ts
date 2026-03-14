@@ -180,7 +180,7 @@ export function downloadIdentityBackup(identity: Identity): void {
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement('a');
 	a.href = url;
-	a.download = `proximity-identity-${identity.did.slice(-8)}.json`;
+	a.download = `meetmarket-identity-${identity.did.slice(-8)}.json`;
 	document.body.appendChild(a);
 	a.click();
 	document.body.removeChild(a);

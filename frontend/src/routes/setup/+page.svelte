@@ -118,7 +118,7 @@
 
 <div class="page-container">
 	<div class="page-header">
-		<span class="page-title">get started</span>
+		<span class="page-title">meetmarket.io</span>
 	</div>
 	<div class="page-content">
 		<p>pick a display&nbsp;name</p>
@@ -159,7 +159,11 @@
 		</button>
 		{#if showDataInfo}
 			<div class="data-info">
-				<p class="text-caption">DMs use a double ratchet [X25519 DH + XSalsa20-Poly1305] with forward secrecy — each message gets a fresh key. sealed sender hides who sent a DM from the server. group messages use sender keys [nacl.secretbox] so only members can read them. photos are encrypted client-side before upload — the server only stores ciphertext. profile fields [bio, age, tags] are encrypted per-profile. your location is hidden using decoy cells [geohash k-anonymity] so the server can't tell where you actually&nbsp;are.</p>
+				<p class="text-caption">DMs are encrypted end-to-end using a double ratchet protocol (X25519 + XSalsa20-Poly1305). Every message generates a fresh key, so compromising one message doesn't expose any others. Except for the first message, the server delivers messages without knowing who sent them (sealed&nbsp;sender).</p>
+				<p class="text-caption">Group messages are encrypted with sender keys (nacl.secretbox) — only group members hold the keys to decrypt. The server relays ciphertext it can't&nbsp;read.</p>
+				<p class="text-caption">Photos are encrypted on your device before upload. The server stores an opaque blob it can never&nbsp;decrypt.</p>
+				<p class="text-caption">Profiles (bio, age, tags) are encrypted per-user. Usernames are currently visible to the server for nearby&nbsp;discovery.</p>
+				<p class="text-caption">Location is never sent to the server. Your device mixes your real position with decoy positions (geohash k-anonymity), so the server processes multiple possible locations and can't distinguish which one is&nbsp;yours.</p>
 			</div>
 		{/if}
 

@@ -653,9 +653,16 @@
 		display: flex;
 		flex-direction: column;
 	}
+	.page :global(.page-container) {
+		overflow: visible !important;
+	}
 	.chat-tabs {
 		border-top: none;
 		border-bottom: 1px solid var(--border);
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		background: var(--bg);
 	}
 	.tab-badge {
 		background: var(--white);

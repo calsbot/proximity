@@ -316,11 +316,13 @@
 {/if}
 
 <div class="page">
-	<!-- Profile edit card -->
-	<div class="page-container">
-		<div class="page-header" style="justify-content: center;">
+	<div class="page-top">
+		<div class="page-header" style="justify-content: center; border: 1px solid var(--border);">
 			<span class="page-title">edit profile</span>
 		</div>
+	</div>
+	<!-- Profile edit card -->
+	<div class="page-container" style="border-top: none;">
 		<div class="page-content">
 			<div class="avatar-section">
 				{#if avatarUrl}
@@ -516,6 +518,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: 12px;
+	}
+	.page-top {
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		background: var(--bg);
+		margin-bottom: -12px;
 	}
 	/* Secondary cards (collapsible sections) */
 	.card {

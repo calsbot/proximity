@@ -42,7 +42,7 @@
 }
 
 html, body {
-	height: 100%;
+	min-height: 100%;
 	font-family: var(--font);
 	font-size: 14px;
 	line-height: 1.5;
@@ -50,7 +50,7 @@ html, body {
 	color: var(--text);
 	text-wrap: balance;
 	-webkit-font-smoothing: antialiased;
-	overscroll-behavior: none;
+	overscroll-behavior-x: none;
 	-webkit-overflow-scrolling: touch;
 }
 
