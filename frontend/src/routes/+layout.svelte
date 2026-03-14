@@ -76,13 +76,19 @@
 			if (identity) {
 				const registered = await ensureRegistered(identity);
 				if (!registered) {
-					// Server doesn't have this profile — send to setup to pick a name
-					identityStore.set({ identity: null, loading: false, error: null });
 					const path = page.url.pathname;
-					if (!path.startsWith('/setup') && !path.startsWith('/invite')) {
-						checked = true;
-						goto('/setup');
-						return;
+					if (path.startsWith('/invite')) {
+						// On invite page, keep identity so user can join directly
+						cacheIdentityInSession(identity);
+						identityStore.set({ identity, loading: false, error: null });
+					} else {
+						// Server doesn't have this profile — send to setup to pick a name
+						identityStore.set({ identity: null, loading: false, error: null });
+						if (!path.startsWith('/setup')) {
+							checked = true;
+							goto('/setup');
+							return;
+						}
 					}
 				} else {
 					cacheIdentityInSession(identity);
