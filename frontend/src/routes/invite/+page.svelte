@@ -46,14 +46,45 @@
 				error = 'this link has expired.';
 				loading = false;
 			});
+
+		// Fallback: if identity store is empty, try loading from IndexedDB directly
+		// (layout may have set it to null if ensureRegistered failed)
+		if (!$identityStore.identity && !$identityStore.loading) {
+			loadIdentityFromStorage().then(existing => {
+				if (existing) {
+					cacheIdentityInSession(existing);
+					identityStore.set({ identity: existing, loading: false, error: null });
+				}
+			}).catch(() => {});
+		}
 	});
 
-	function handleEnter() {
+	async function handleEnter() {
 		if (myDid) {
 			handleJoin();
-		} else {
-			showSignup = true;
+			return;
 		}
+		// Try loading identity from IndexedDB before showing signup
+		try {
+			const existing = await loadIdentityFromStorage();
+			if (existing) {
+				cacheIdentityInSession(existing);
+				identityStore.set({ identity: existing, loading: false, error: null });
+				// myDid will update reactively, but call handleJoin directly with the did
+				joining = true;
+				error = '';
+				try {
+					await joinGroupViaInvite(groupId, existing.did, inviteKey);
+					getOrCreateConversation(groupId, '', groupName, '', null, true);
+					goto(`/chat/${encodeURIComponent(groupId)}`);
+				} catch (e) {
+					error = e instanceof Error ? e.message : 'failed to join.';
+					joining = false;
+				}
+				return;
+			}
+		} catch {}
+		showSignup = true;
 	}
 
 	async function handleJoin() {
