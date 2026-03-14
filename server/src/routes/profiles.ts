@@ -14,6 +14,8 @@ export const profileRoutes = new Hono();
 profileRoutes.get('/discover', async (c) => {
 	const cellsParam = c.req.query('cells');
 	const requesterDid = c.req.query('requesterDid');
+	const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 200);
+	const offset = parseInt(c.req.query('offset') ?? '0', 10) || 0;
 
 	if (!cellsParam) {
 		return c.json({ error: 'cells parameter required' }, 400);
@@ -86,7 +88,49 @@ profileRoutes.get('/discover', async (c) => {
 		}
 	});
 
-	const results = matching.map(p => {
+	// Sort by geohash proximity (longest shared prefix = closest) then by lastSeen as tiebreaker
+	// Higher-precision query cells (longer strings) are the requester's actual location
+	const queryCellsByLength = [...cells].sort((a, b) => b.length - a.length);
+
+	function proximityScore(profile: typeof matching[0]): number {
+		try {
+			const profileCells: string[] = JSON.parse(profile.geohashCells!);
+			let best = 0;
+			for (const pc of profileCells) {
+				for (const qc of queryCellsByLength) {
+					// Count shared prefix length
+					const minLen = Math.min(pc.length, qc.length);
+					let shared = 0;
+					for (let i = 0; i < minLen; i++) {
+						if (pc[i] === qc[i]) shared++;
+						else break;
+					}
+					if (shared > best) best = shared;
+					// Early exit — can't do better than this query cell's length
+					if (best >= qc.length) return best;
+				}
+			}
+			return best;
+		} catch { return 0; }
+	}
+
+	// Pre-compute scores to avoid re-calculating during sort
+	const scores = new Map<string, number>();
+	for (const m of matching) scores.set(m.did, proximityScore(m));
+
+	matching.sort((a, b) => {
+		const scoreDiff = (scores.get(b.did) ?? 0) - (scores.get(a.did) ?? 0);
+		if (scoreDiff !== 0) return scoreDiff;
+		// Tiebreak by lastSeen descending
+		const aMs = a.lastSeen instanceof Date ? a.lastSeen.getTime() : Number(a.lastSeen ?? 0) * 1000;
+		const bMs = b.lastSeen instanceof Date ? b.lastSeen.getTime() : Number(b.lastSeen ?? 0) * 1000;
+		return bMs - aMs;
+	});
+
+	const total = matching.length;
+	const page = matching.slice(offset, offset + limit);
+
+	const results = page.map(p => {
 		const profileCells: string[] = JSON.parse(p.geohashCells!);
 		const matchedCell = profileCells.find(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc))) ?? profileCells[0];
 		return {
@@ -109,7 +153,7 @@ profileRoutes.get('/discover', async (c) => {
 		};
 	});
 
-	return c.json(results);
+	return c.json({ profiles: results, total, limit, offset });
 });
 
 /**
@@ -151,6 +195,29 @@ profileRoutes.get('/search', async (c) => {
 	}).slice(0, 20);
 
 	return c.json(results);
+});
+
+/**
+ * GET /profiles/popular-tags
+ */
+profileRoutes.get('/popular-tags', async (c) => {
+	const rows = await db.select({ tags: profiles.tags }).from(profiles).all();
+	const counts = new Map<string, number>();
+	for (const row of rows) {
+		if (!row.tags) continue;
+		try {
+			const parsed = JSON.parse(row.tags) as string[];
+			for (const t of parsed) {
+				const lower = t.toLowerCase();
+				counts.set(lower, (counts.get(lower) ?? 0) + 1);
+			}
+		} catch {}
+	}
+	const sorted = Array.from(counts.entries())
+		.sort((a, b) => b[1] - a[1])
+		.slice(0, 20)
+		.map(([tag]) => tag);
+	return c.json(sorted);
 });
 
 /**

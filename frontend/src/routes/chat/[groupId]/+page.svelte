@@ -16,6 +16,7 @@
 	import MediaViewer from '$lib/components/MediaViewer.svelte';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
 
+
 	let input = $state('');
 	let sending = $state(false);
 	let pendingMessage = $state<{ text: string; isMedia: boolean } | null>(null);
@@ -96,6 +97,8 @@
 
 	// File attach error toast
 	let attachError = $state('');
+
+
 
 	// Peer profile for DM header
 	interface PeerProfile {

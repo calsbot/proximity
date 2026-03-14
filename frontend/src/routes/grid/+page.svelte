@@ -46,9 +46,16 @@
 	let locationError = $state(false);
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
 	// Filter state
-	let tagSearch = $state('');
+	let tagInput = $state('');
+	let committedTags = $state<Set<string>>(new Set());
 	let selectedGroups = $state<Set<string>>(new Set());
 	let showFilter = $state(false);
+	// Server pagination
+	let serverTotal = $state(0);
+	let serverOffset = $state(0);
+	const SERVER_PAGE_SIZE = 50;
+	let fetchingMore = $state(false);
+	let currentCells = $state<string[]>([]);
 
 	// Pending request sender DIDs (for grid badge)
 	let requestSenderDids = $state<Set<string>>(new Set());
@@ -65,13 +72,71 @@
 	// Check if we already have location from the store
 	let hasLoc = $derived($locationStore.geohash !== null);
 
+	// Collect all tags with frequency counts for suggestions
+	let tagCounts = $derived.by(() => {
+		const counts = new Map<string, number>();
+		for (const p of allProfiles) {
+			if (p.tags) {
+				for (const t of p.tags) {
+					const lower = t.toLowerCase();
+					counts.set(lower, (counts.get(lower) ?? 0) + 1);
+				}
+			}
+		}
+		return counts;
+	});
+
+	// Tag suggestions: filtered by current input, sorted by frequency, excluding already committed
+	let tagSuggestions = $derived.by(() => {
+		const q = tagInput.trim().toLowerCase();
+		let entries = Array.from(tagCounts.entries())
+			.filter(([tag]) => !committedTags.has(tag));
+		if (q) {
+			entries = entries.filter(([tag]) => tag.includes(q));
+		}
+		return entries
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 8)
+			.map(([tag, count]) => ({ tag, count }));
+	});
+
+	function commitTag(tag: string) {
+		const t = tag.trim().toLowerCase();
+		if (!t) return;
+		const next = new Set(committedTags);
+		next.add(t);
+		committedTags = next;
+		tagInput = '';
+	}
+
+	function removeTag(tag: string) {
+		const next = new Set(committedTags);
+		next.delete(tag);
+		committedTags = next;
+	}
+
+	function handleTagKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' || e.key === ',') {
+			e.preventDefault();
+			commitTag(tagInput);
+		}
+		if (e.key === 'Backspace' && tagInput === '' && committedTags.size > 0) {
+			// Remove the last committed tag on backspace when input is empty
+			const tags = Array.from(committedTags);
+			removeTag(tags[tags.length - 1]);
+		}
+	}
+
 	// Filtered + sorted profiles based on active filters
 	let sortedProfiles = $derived.by(() => {
 		let list = allProfiles;
-		// Tag filter
-		if (tagSearch.trim()) {
-			const q = tagSearch.trim().toLowerCase();
-			list = list.filter(p => p.tags?.some(t => t.toLowerCase().includes(q)));
+		// Tag filter — match ALL committed tags
+		if (committedTags.size > 0) {
+			list = list.filter(p => {
+				if (!p.tags) return false;
+				const pTags = p.tags.map(t => t.toLowerCase());
+				return Array.from(committedTags).every(ct => pTags.some(pt => pt.includes(ct)));
+			});
 		}
 		// Group filter (OR: in any selected group)
 		if (selectedGroups.size > 0) {
@@ -81,16 +146,16 @@
 	});
 
 	let activeFilterCount = $derived(
-		(tagSearch.trim() ? 1 : 0) + selectedGroups.size
+		committedTags.size + selectedGroups.size
 	);
 
 	// Only show visibleCount profiles (for infinite scroll)
 	let profiles = $derived(sortedProfiles.slice(0, visibleCount));
-	let hasMore = $derived(visibleCount < sortedProfiles.length);
+	let hasMore = $derived(visibleCount < sortedProfiles.length || serverOffset < serverTotal);
 
 	// Reset visible count when filter changes
 	$effect(() => {
-		tagSearch;
+		committedTags;
 		selectedGroups;
 		visibleCount = BATCH_SIZE;
 	});
@@ -244,54 +309,69 @@
 		}
 	}
 
-	async function fetchProfiles(cells: string[]) {
-		try {
-			const data = await discoverProfiles(cells, myDid ?? undefined);
-			const loc = get(locationStore);
+	function enrichProfiles(data: any[]): NearbyProfile[] {
+		const loc = get(locationStore);
+		const decryptedData = data.filter(p => p.did !== myDid).map(p => {
+			let decryptedBio = p.bio;
+			let decryptedAge = p.age;
+			let decryptedTags: string[] = p.tags ?? [];
 
-			// Decrypt profile fields using the key from the API response
-			const decryptedData = data.filter(p => p.did !== myDid).map(p => {
-				let decryptedBio = p.bio;
-				let decryptedAge = p.age;
-				let decryptedTags: string[] = p.tags ?? [];
-
-				if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
-					try {
-						const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
-						decryptedBio = fields.bio ?? '';
-						decryptedAge = fields.age;
-						decryptedTags = fields.tags ?? [];
-					} catch {}
-				}
-
-				return { ...p, bio: decryptedBio, age: decryptedAge, tags: decryptedTags };
-			});
-
-			let enriched: NearbyProfile[];
-
-			if (loc.lat && loc.lon) {
-				enriched = decryptedData.map((p) => {
-					const c = center(p.geohashCell);
-					const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
-					const sharedGroups = myGroups
-						.filter(g => g.memberDids.has(p.did))
-						.map(g => ({ id: g.id, name: g.name }));
-					return { ...p, distance: dist, sharedGroups };
-				});
-			} else {
-				enriched = decryptedData.map((p) => {
-					const sharedGroups = myGroups
-						.filter(g => g.memberDids.has(p.did))
-						.map(g => ({ id: g.id, name: g.name }));
-					return { ...p, sharedGroups };
-				});
+			if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
+				try {
+					const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+					decryptedBio = fields.bio ?? '';
+					decryptedAge = fields.age;
+					decryptedTags = fields.tags ?? [];
+				} catch {}
 			}
 
-			allProfiles = enriched;
+			return { ...p, bio: decryptedBio, age: decryptedAge, tags: decryptedTags };
+		});
+
+		if (loc.lat && loc.lon) {
+			return decryptedData.map((p) => {
+				const c = center(p.geohashCell);
+				const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
+				const sharedGroups = myGroups
+					.filter(g => g.memberDids.has(p.did))
+					.map(g => ({ id: g.id, name: g.name }));
+				return { ...p, distance: dist, sharedGroups };
+			});
+		} else {
+			return decryptedData.map((p) => {
+				const sharedGroups = myGroups
+					.filter(g => g.memberDids.has(p.did))
+					.map(g => ({ id: g.id, name: g.name }));
+				return { ...p, sharedGroups };
+			});
+		}
+	}
+
+	async function fetchProfiles(cells: string[]) {
+		try {
+			currentCells = cells;
+			const resp = await discoverProfiles(cells, myDid ?? undefined, SERVER_PAGE_SIZE, 0);
+			serverTotal = resp.total;
+			serverOffset = resp.profiles.length;
+			allProfiles = enrichProfiles(resp.profiles);
 		} catch {
 			allProfiles = [];
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function fetchMoreProfiles() {
+		if (fetchingMore || serverOffset >= serverTotal || !currentCells.length) return;
+		fetchingMore = true;
+		try {
+			const existingDids = new Set(allProfiles.map(p => p.did));
+			const resp = await discoverProfiles(currentCells, myDid ?? undefined, SERVER_PAGE_SIZE, serverOffset);
+			serverOffset += resp.profiles.length;
+			const newProfiles = enrichProfiles(resp.profiles).filter(p => !existingDids.has(p.did));
+			allProfiles = [...allProfiles, ...newProfiles];
+		} catch {} finally {
+			fetchingMore = false;
 		}
 	}
 
@@ -370,6 +450,41 @@
 
 	let isMapActive = $derived(viewMode === 'map' && hasLoc && !loading && !locationError);
 
+	// Map viewport change — fetch profiles for the visible area
+	async function handleMapViewportChange(bounds: { north: number; south: number; east: number; west: number }) {
+		if (fetchingMore) return;
+		// Encode corners to geohash cells at precision 5 (~5km) to cover the viewport
+		const centerLat = (bounds.north + bounds.south) / 2;
+		const centerLon = (bounds.east + bounds.west) / 2;
+		const viewCells = new Set<string>();
+		// Sample grid of points across the viewport
+		for (const lat of [bounds.north, centerLat, bounds.south]) {
+			for (const lon of [bounds.west, centerLon, bounds.east]) {
+				const h5 = encode(lat, lon, 5);
+				viewCells.add(h5);
+				for (const n of neighbors(h5)) viewCells.add(n);
+			}
+		}
+		// Merge with current cells and fetch if we have new cells
+		const newCells = Array.from(viewCells).filter(c => !currentCells.includes(c));
+		if (newCells.length === 0) return;
+		// Add new cells to current set
+		currentCells = [...currentCells, ...newCells];
+		// Fetch with full cell set from offset 0 (server will return new matches)
+		fetchingMore = true;
+		try {
+			const existingDids = new Set(allProfiles.map(p => p.did));
+			const resp = await discoverProfiles(currentCells, myDid ?? undefined, SERVER_PAGE_SIZE, 0);
+			serverTotal = resp.total;
+			const newProfiles = enrichProfiles(resp.profiles).filter(p => !existingDids.has(p.did));
+			if (newProfiles.length > 0) {
+				allProfiles = [...allProfiles, ...newProfiles];
+			}
+		} catch {} finally {
+			fetchingMore = false;
+		}
+	}
+
 	// Infinite scroll: IntersectionObserver on a sentinel element
 	let sentinel: HTMLElement | undefined = $state();
 
@@ -378,9 +493,12 @@
 		const observer = new IntersectionObserver((entries) => {
 			if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
 				loadingMore = true;
-				// Small delay so the UI can paint
 				setTimeout(() => {
 					visibleCount += BATCH_SIZE;
+					// If we've shown all locally loaded profiles but server has more, fetch next page
+					if (visibleCount >= allProfiles.length && serverOffset < serverTotal) {
+						fetchMoreProfiles();
+					}
 					loadingMore = false;
 				}, 100);
 			}
@@ -408,27 +526,43 @@
 						type="text"
 						class="filter-search"
 						placeholder="search tags..."
-						bind:value={tagSearch}
+						bind:value={tagInput}
+						onkeydown={handleTagKeydown}
 					/>
+					{#if tagSuggestions.length > 0}
+						<div class="tags-row">
+							{#each tagSuggestions as { tag }}
+								<button
+									class="tag-pill"
+									class:active={committedTags.has(tag)}
+									onclick={() => committedTags.has(tag) ? removeTag(tag) : commitTag(tag)}
+								>{tag}</button>
+							{/each}
+						</div>
+					{/if}
 					{#if myGroups.length > 0}
-						<div class="filter-section-label">groups</div>
-						{#each myGroups as group}
-							<button
-								class="filter-group-row"
-								class:selected={selectedGroups.has(group.id)}
-								onclick={() => {
-									const next = new Set(selectedGroups);
-									if (next.has(group.id)) next.delete(group.id);
-									else next.add(group.id);
-									selectedGroups = next;
-								}}
-							>{group.name}</button>
-						{/each}
+						<div class="groups-section">
+							<span class="groups-label">groups</span>
+							{#each myGroups as group}
+								<button
+									class="group-row"
+									class:selected={selectedGroups.has(group.id)}
+									onclick={() => {
+										const next = new Set(selectedGroups);
+										if (next.has(group.id)) next.delete(group.id);
+										else next.add(group.id);
+										selectedGroups = next;
+									}}
+								>{group.name}</button>
+							{/each}
+						</div>
 					{:else}
-						<a href="/chat" class="filter-group-row create">+ create group</a>
+						<div class="groups-section">
+							<a href="/chat" class="group-row create">+ create group</a>
+						</div>
 					{/if}
 					{#if activeFilterCount > 0}
-						<button class="filter-clear" onclick={() => { tagSearch = ''; selectedGroups = new Set(); }}>clear filters</button>
+						<button class="filter-clear" onclick={() => { committedTags = new Set(); tagInput = ''; selectedGroups = new Set(); }}>clear filters</button>
 					{/if}
 				</div>
 			{/if}
@@ -438,7 +572,7 @@
 			<div class="location-prompt">
 				<p class="prompt-title">share your location to see who's&nbsp;nearby</p>
 				<button onclick={enableLocation}>enable location</button>
-				<p class="prompt-detail">we add nearby areas to prevent exact positioning</p>
+				<p class="prompt-detail">nearby areas are added to prevent exact positioning</p>
 			</div>
 		{:else if loading}
 			<p class="status">scanning...</p>
@@ -453,11 +587,12 @@
 			<div class="map-wrapper">
 				{#if loc.lat && loc.lon}
 					<ProximityMap
-						profiles={profiles}
+						profiles={sortedProfiles}
 						userLat={loc.lat}
 						userLon={loc.lon}
 						activeFilter={'all'}
 						groups={myGroups.map(g => ({ id: g.id, name: g.name }))}
+						onViewportChange={handleMapViewportChange}
 					/>
 				{/if}
 			</div>
@@ -557,67 +692,96 @@
 	.filter-dropdown {
 		display: flex;
 		flex-direction: column;
-		border-bottom: 1px solid var(--border);
+		gap: 14px;
+		padding: 16px;
+		border: 1px solid var(--border);
+		border-top: none;
+		z-index: 2;
 	}
 	.filter-search {
 		width: 100%;
-		padding: 12px 16px;
-		font-size: 14px;
-		border: none;
-		border-bottom: 1px solid var(--border);
+		padding: 10px 12px;
+		font-size: 13px;
+		border: 1px solid var(--border);
+		border-radius: 0;
 		background: transparent;
 		color: var(--text);
 		outline: none;
 		box-sizing: border-box;
-		min-height: 48px;
 	}
 	.filter-search::placeholder {
 		color: var(--text-tertiary);
 	}
-	.filter-section-label {
-		padding: 10px 16px 4px;
-		font-size: 11px;
-		color: var(--text-tertiary);
-		text-transform: lowercase;
+	.tags-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
 	}
-	.filter-group-row {
-		padding: 10px 16px;
-		font-size: 14px;
-		border: none;
+	.tag-pill {
+		padding: 4px 10px;
+		font-size: 12px;
+		border: 1px solid var(--border);
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
-		text-align: left;
-		min-height: 44px;
-		display: flex;
-		align-items: center;
-		text-decoration: none;
 	}
-	.filter-group-row.selected {
+	.tag-pill.active {
 		color: var(--text);
+		border-color: var(--text-muted);
 		background: var(--bg-hover);
 	}
 	@media (hover: hover) {
-		.filter-group-row:hover {
-			background: var(--bg-hover);
+		.tag-pill:hover {
 			color: var(--text);
+			border-color: var(--text-muted);
 		}
 	}
-	.filter-group-row.create {
-		color: var(--text-muted);
+	.groups-section {
+		border-top: 1px solid var(--border);
+		padding-top: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
 	}
-	.filter-clear {
-		padding: 12px 16px;
+	.groups-label {
+		color: var(--text-tertiary);
+		font-size: 11px;
+		margin-bottom: 4px;
+	}
+	.group-row {
+		padding: 8px 0;
 		font-size: 13px;
 		border: none;
-		border-top: 1px solid var(--border);
+		border-bottom: 1px solid var(--bg-hover);
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
 		text-align: left;
-		min-height: 44px;
+		text-decoration: none;
+		display: block;
+	}
+	.group-row.selected {
+		color: var(--text);
+	}
+	@media (hover: hover) {
+		.group-row:hover {
+			color: var(--text);
+		}
+	}
+	.group-row.create {
+		color: var(--text-muted);
+	}
+	.filter-clear {
+		align-self: flex-end;
+		padding: 0;
+		font-size: 12px;
+		border: none;
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-tertiary);
+		cursor: pointer;
 	}
 	@media (hover: hover) {
 		.filter-clear:hover {
@@ -704,7 +868,6 @@
 		display: block;
 	}
 	.cell-img.online { border-bottom: 1px solid var(--online); }
-	.cell-img.idle { border-bottom: 1px solid var(--idle); }
 	.cell-placeholder {
 		position: absolute;
 		inset: 0;

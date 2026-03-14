@@ -530,6 +530,8 @@ export default {
 				}
 			}
 
+
+
 			if (data.type === 'group_message' && data.groupId) {
 					// Verify sender is still a member before relaying
 					const senderDid = (ws as any).did;

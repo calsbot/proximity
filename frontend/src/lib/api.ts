@@ -49,27 +49,36 @@ export function updateProfile(did: string, data: {
 	});
 }
 
-export function discoverProfiles(cells: string[], requesterDid?: string) {
-	let url = `/profiles/discover?cells=${cells.join(',')}`;
+export interface DiscoverProfile {
+	did: string;
+	displayName: string;
+	bio: string;
+	age: number | null;
+	tags: string[];
+	boxPublicKey: string | null;
+	avatarMediaId: string | null;
+	avatarKey: string | null;
+	avatarNonce: string | null;
+	instagram: string | null;
+	profileLink: string | null;
+	profileKey: string | null;
+	encryptedFields: string | null;
+	encryptedFieldsNonce: string | null;
+	geohashCell: string;
+	lastSeen: string;
+}
+
+export interface DiscoverResponse {
+	profiles: DiscoverProfile[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+export function discoverProfiles(cells: string[], requesterDid?: string, limit = 50, offset = 0) {
+	let url = `/profiles/discover?cells=${cells.join(',')}&limit=${limit}&offset=${offset}`;
 	if (requesterDid) url += `&requesterDid=${encodeURIComponent(requesterDid)}`;
-	return request<Array<{
-		did: string;
-		displayName: string;
-		bio: string;
-		age: number | null;
-		tags: string[];
-		boxPublicKey: string | null;
-		avatarMediaId: string | null;
-		avatarKey: string | null;
-		avatarNonce: string | null;
-		instagram: string | null;
-		profileLink: string | null;
-		profileKey: string | null;
-		encryptedFields: string | null;
-		encryptedFieldsNonce: string | null;
-		geohashCell: string;
-		lastSeen: string;
-	}>>(url);
+	return request<DiscoverResponse>(url);
 }
 
 export function searchProfiles(query: string, requesterDid?: string) {
@@ -108,6 +117,10 @@ export function getProfile(did: string) {
 		geohashCells: string;
 		lastSeen: string;
 	}>(`/profiles/${encodeURIComponent(did)}`);
+}
+
+export function getPopularTags() {
+	return request<string[]>('/profiles/popular-tags');
 }
 
 // --- Messages ---

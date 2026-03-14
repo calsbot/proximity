@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { identityStore } from '$lib/stores/identity';
 	import { locationStore, requestLocation } from '$lib/stores/location';
-	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, BASE } from '$lib/api';
+	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, getPopularTags, BASE } from '$lib/api';
 	import { encryptMedia, decryptMedia, fileToUint8Array, bytesToObjectUrl } from '$lib/crypto/media';
 	import { loadIdentityFromStorage, downloadIdentityBackup, clearIdentityFromStorage } from '$lib/crypto/identity';
 	import { clearIdentitySession, broadcastIdentityChange } from '$lib/stores/identity';
@@ -14,6 +14,7 @@
 	let age = $state('');
 	let tags = $state<string[]>([]);
 	let tagInput = $state('');
+	let popularTags = $state<string[]>([]);
 	let saving = $state(false);
 	let saved = $state(false);
 	let error = $state('');
@@ -93,9 +94,12 @@
 				}
 			} catch {}
 
-			// Load blocked users
+			// Load blocked users + popular tags
 			try {
 				blockedUsers = await listBlocks(did);
+			} catch {}
+			try {
+				popularTags = await getPopularTags();
 			} catch {}
 
 			// Refresh location if permission already granted
@@ -162,6 +166,14 @@
 			saving = false;
 		}
 	}
+
+	let suggestedTags = $derived.by(() => {
+		const q = tagInput.trim().toLowerCase();
+		if (!q) return [];
+		return popularTags
+			.filter(t => t.includes(q) && !tags.includes(t))
+			.slice(0, 5);
+	});
 
 	function addTag() {
 		const t = tagInput.trim().toLowerCase();
@@ -306,7 +318,7 @@
 <div class="page">
 	<!-- Profile edit card -->
 	<div class="page-container">
-		<div class="page-header">
+		<div class="page-header" style="justify-content: center;">
 			<span class="page-title">edit profile</span>
 		</div>
 		<div class="page-content">
@@ -353,9 +365,16 @@
 							class="tag-input"
 							bind:value={tagInput}
 							onkeydown={handleTagKeydown}
-							placeholder={tags.length === 0 ? 'pronouns, interests, looking for...' : ''}
+							placeholder={tags.length === 0 ? 'looking for, fetishes, scene etc...' : ''}
 						/>
 					</div>
+					{#if suggestedTags.length > 0}
+						<div class="popular-tags">
+							{#each suggestedTags as tag}
+								<button class="popular-tag" onclick={() => { tags = [...tags, tag]; tagInput = ''; }}>{tag}</button>
+							{/each}
+						</div>
+					{/if}
 					<span class="text-caption">press enter or comma to add</span>
 				</div>
 
@@ -712,6 +731,26 @@
 		color: var(--text-muted);
 		opacity: 0.6;
 	}
+	.popular-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.popular-tag {
+		padding: 4px 10px;
+		font-size: 12px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.popular-tag:hover {
+			color: var(--text);
+			border-color: var(--text-muted);
+		}
+	}
 	.email-section {
 		display: flex;
 		flex-direction: column;
@@ -728,9 +767,31 @@
 		gap: 8px;
 	}
 	.checkbox-row input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		accent-color: var(--white);
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
+		border: 1.5px solid var(--text-muted);
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+		position: relative;
+	}
+	.checkbox-row input[type="checkbox"]:checked {
+		background: var(--white);
+		border-color: var(--white);
+	}
+	.checkbox-row input[type="checkbox"]:checked::after {
+		content: '✓';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		font-size: 13px;
+		color: #000;
+		line-height: 1;
 	}
 	.checkbox-row span {
 		font-size: 14px;

@@ -155,11 +155,11 @@
 		</div>
 
 		<button class="expand-toggle" onclick={() => showDataInfo = !showDataInfo}>
-			{showDataInfo ? '− ' : '+ '}how your data is&nbsp;used
+			{showDataInfo ? '− ' : '+ '}how your data is (not)&nbsp;used
 		</button>
 		{#if showDataInfo}
 			<div class="data-info">
-				<p class="text-caption">your photos and messages are end-to-end encrypted [XSalsa20-Poly1305 + X25519 key exchange] — the server only stores ciphertext it can't read. your location is hidden using decoy cells [geohash k-anonymity] so the server can't tell where you actually&nbsp;are.</p>
+				<p class="text-caption">DMs use a double ratchet [X25519 DH + XSalsa20-Poly1305] with forward secrecy — each message gets a fresh key. sealed sender hides who sent a DM from the server. group messages use sender keys [nacl.secretbox] so only members can read them. photos are encrypted client-side before upload — the server only stores ciphertext. profile fields [bio, age, tags] are encrypted per-profile. your location is hidden using decoy cells [geohash k-anonymity] so the server can't tell where you actually&nbsp;are.</p>
 			</div>
 		{/if}
 
@@ -191,9 +191,31 @@
 		gap: 8px;
 	}
 	.checkbox-row input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		accent-color: var(--white);
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
+		border: 1.5px solid var(--text-muted);
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+		position: relative;
+	}
+	.checkbox-row input[type="checkbox"]:checked {
+		background: var(--white);
+		border-color: var(--white);
+	}
+	.checkbox-row input[type="checkbox"]:checked::after {
+		content: '✓';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		font-size: 13px;
+		color: #000;
+		line-height: 1;
 	}
 	.checkbox-row span {
 		font-size: 14px;
