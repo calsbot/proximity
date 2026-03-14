@@ -1,20 +1,26 @@
 <script lang="ts">
 	import { identityStore } from '$lib/stores/identity';
 	import { locationStore, requestLocation } from '$lib/stores/location';
-	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, BASE } from '$lib/api';
+	import { updateProfile, getProfile, uploadMedia, getMedia, getMediaBlob, listBlocks, unblockUser, subscribeNewsletter, getPopularTags, BASE } from '$lib/api';
 	import { encryptMedia, decryptMedia, fileToUint8Array, bytesToObjectUrl } from '$lib/crypto/media';
-	import { loadIdentityFromStorage, downloadIdentityBackup } from '$lib/crypto/identity';
+	import { loadIdentityFromStorage, downloadIdentityBackup, clearIdentityFromStorage } from '$lib/crypto/identity';
+	import { clearIdentitySession, broadcastIdentityChange } from '$lib/stores/identity';
+	import { encryptProfileFields, decryptProfileFields, generateProfileKey } from '$lib/crypto/profile';
 	import { wsStatus } from '$lib/services/websocket';
 	import ImageCropper from '$lib/components/ImageCropper.svelte';
 
 	let displayName = $state('');
 	let bio = $state('');
 	let age = $state('');
+	let tags = $state<string[]>([]);
+	let tagInput = $state('');
+	let popularTags = $state<string[]>([]);
 	let saving = $state(false);
 	let saved = $state(false);
 	let error = $state('');
 	let saveTimer: ReturnType<typeof setTimeout> | undefined;
 	let initialLoad = $state(true);
+	let profileKey = $state<string | null>(null); // base64 secretbox key from server
 
 	// Photo upload
 	let avatarUrl = $state<string | null>(null);
@@ -34,6 +40,8 @@
 	let showIdentity = $state(false);
 	let showLocation = $state(false);
 	let showBlocked = $state(false);
+	let confirmReset = $state(false);
+	let resetting = $state(false);
 	let wantsUpdates = $state(false);
 	let updateEmail = $state('');
 	let subscribing = $state(false);
@@ -47,8 +55,26 @@
 			try {
 				const profile = await getProfile(did);
 				displayName = profile.displayName ?? '';
-				bio = profile.bio ?? '';
-				age = profile.age ? String(profile.age) : '';
+				profileKey = profile.profileKey ?? null;
+
+				// Decrypt encrypted fields if key is available
+				if (profile.encryptedFields && profile.encryptedFieldsNonce && profile.profileKey) {
+					try {
+						const fields = decryptProfileFields(profile.encryptedFields, profile.encryptedFieldsNonce, profile.profileKey);
+						bio = fields.bio ?? '';
+						age = fields.age ? String(fields.age) : '';
+						tags = fields.tags ?? [];
+					} catch {
+						// Fallback to plaintext fields
+						bio = profile.bio ?? '';
+						age = profile.age ? String(profile.age) : '';
+						tags = profile.tags ?? [];
+					}
+				} else {
+					bio = profile.bio ?? '';
+					age = profile.age ? String(profile.age) : '';
+					tags = profile.tags ?? [];
+				}
 
 					// Mark initial load complete after a tick so auto-save doesn't fire
 				setTimeout(() => { initialLoad = false; }, 100);
@@ -68,9 +94,12 @@
 				}
 			} catch {}
 
-			// Load blocked users
+			// Load blocked users + popular tags
 			try {
 				blockedUsers = await listBlocks(did);
+			} catch {}
+			try {
+				popularTags = await getPopularTags();
 			} catch {}
 
 			// Refresh location if permission already granted
@@ -89,6 +118,7 @@
 		const _name = displayName;
 		const _bio = bio;
 		const _age = age;
+		const _tags = tags;
 
 		// Skip the initial load — only save on user edits
 		if (initialLoad) return;
@@ -102,15 +132,31 @@
 
 	async function autoSave() {
 		if (!myDid) return;
+		if (age && parseInt(age) < 18) {
+			error = 'you must be at least 18 to use this app';
+			return;
+		}
 		saving = true;
 		saved = false;
 		error = '';
 
 		try {
+			// Generate profile key if we don't have one yet
+			if (!profileKey) profileKey = generateProfileKey();
+
+			const { encryptedFields, nonce } = encryptProfileFields(
+				{ bio: bio.trim(), age: age ? parseInt(age) : null, tags },
+				profileKey
+			);
+
 			await updateProfile(myDid, {
 				displayName: displayName.trim() || undefined,
 				bio: bio.trim(),
 				age: age ? parseInt(age) : undefined,
+				tags,
+				profileKey,
+				encryptedFields,
+				encryptedFieldsNonce: nonce,
 			});
 			saved = true;
 			setTimeout(() => saved = false, 2000);
@@ -118,6 +164,36 @@
 			error = e instanceof Error ? e.message : 'failed to save';
 		} finally {
 			saving = false;
+		}
+	}
+
+	let suggestedTags = $derived.by(() => {
+		const q = tagInput.trim().toLowerCase();
+		if (!q) return [];
+		return popularTags
+			.filter(t => t.includes(q) && !tags.includes(t))
+			.slice(0, 5);
+	});
+
+	function addTag() {
+		const t = tagInput.trim().toLowerCase();
+		if (t && !tags.includes(t)) {
+			tags = [...tags, t];
+		}
+		tagInput = '';
+	}
+
+	function removeTag(tag: string) {
+		tags = tags.filter(t => t !== tag);
+	}
+
+	function handleTagKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' || e.key === ',') {
+			e.preventDefault();
+			addTag();
+		}
+		if (e.key === 'Backspace' && !tagInput && tags.length > 0) {
+			tags = tags.slice(0, -1);
 		}
 	}
 
@@ -208,6 +284,31 @@
 			}
 		} catch {}
 	}
+
+	async function handleReset() {
+		if (!confirmReset) {
+			confirmReset = true;
+			return;
+		}
+		resetting = true;
+		try {
+			await clearIdentityFromStorage();
+			clearIdentitySession();
+			// Delete all IndexedDB databases for a clean slate
+			const dbs = await indexedDB.databases();
+			for (const db of dbs) {
+				if (db.name) indexedDB.deleteDatabase(db.name);
+			}
+			localStorage.clear();
+			sessionStorage.clear();
+			// Tell other tabs identity is gone — they'll reload and hit /setup too
+			broadcastIdentityChange();
+			window.location.href = '/setup';
+		} catch (e) {
+			console.error('Reset failed:', e);
+			resetting = false;
+		}
+	}
 </script>
 
 {#if showCropper && cropFile}
@@ -215,11 +316,13 @@
 {/if}
 
 <div class="page">
-	<!-- Profile edit card -->
-	<div class="page-container">
-		<div class="page-header">
+	<div class="page-top">
+		<div class="page-header" style="justify-content: center; border: 1px solid var(--border);">
 			<span class="page-title">edit profile</span>
 		</div>
+	</div>
+	<!-- Profile edit card -->
+	<div class="page-container" style="border-top: none;">
 		<div class="page-content">
 			<div class="avatar-section">
 				{#if avatarUrl}
@@ -231,7 +334,7 @@
 					<input type="file" accept="image/*" onchange={handleFileSelect} hidden />
 					{uploading ? 'uploading...' : 'upload photo'}
 				</label>
-				<p class="text-caption">your photo is encrypted locally before&nbsp;upload.</p>
+				<p class="text-caption">your photo is encrypted locally before upload</p>
 			</div>
 
 			<div class="fields">
@@ -250,6 +353,33 @@
 					<textarea bind:value={bio} rows="3" placeholder="tell people about yourself"></textarea>
 				</label>
 
+				<div class="tag-section">
+					<span class="tag-label">tags</span>
+					<div class="tag-container">
+						{#each tags as tag}
+							<span class="tag-chip">
+								{tag}
+								<button class="tag-remove" onclick={() => removeTag(tag)}>x</button>
+							</span>
+						{/each}
+						<input
+							type="text"
+							class="tag-input"
+							bind:value={tagInput}
+							onkeydown={handleTagKeydown}
+							placeholder={tags.length === 0 ? 'looking for, fetishes, scene etc...' : ''}
+						/>
+					</div>
+					{#if suggestedTags.length > 0}
+						<div class="popular-tags">
+							{#each suggestedTags as tag}
+								<button class="popular-tag" onclick={() => { tags = [...tags, tag]; tagInput = ''; }}>{tag}</button>
+							{/each}
+						</div>
+					{/if}
+					<span class="text-caption">press enter or comma to add</span>
+				</div>
+
 				<div class="save-status">
 					{#if saving}
 						<span class="status-text">saving...</span>
@@ -263,25 +393,30 @@
 				<button class="btn-primary" onclick={handleBackup}>
 					{backupDownloaded ? 'downloaded!' : 'back up profile'}
 				</button>
-				<span class="text-caption">Save your identity file. It can't be recovered if&nbsp;lost.</span>
+				<span class="text-caption">save your identity file — it can't be recovered if lost</span>
 			</div>
+		</div>
+	</div>
+
+	<!-- Encrypted albums -->
+	<div class="card">
+		<div class="card-header">
+			<span class="title">encrypted albums</span>
+			<span class="coming-soon">coming soon</span>
 		</div>
 	</div>
 
 	<!-- Email updates -->
 	<div class="card">
-		<div class="card-body">
+		<div class="card-body email-section">
 			<label class="checkbox-row">
 				<input type="checkbox" bind:checked={wantsUpdates} />
 				<span>send me project updates</span>
 			</label>
 			{#if wantsUpdates}
-				<label>
-					<span class="info-label">email</span>
-					<input type="email" bind:value={updateEmail} placeholder="you@example.com" />
-				</label>
-				<p class="info-note" style="margin-top: 8px; border-top: none; padding-top: 0;">never linked to your account.</p>
-				<button class="btn-primary" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
+				<input type="email" bind:value={updateEmail} placeholder="you@example.com" class="email-input" />
+				<span class="text-caption">never linked to your account</span>
+				<button class="btn-primary small" onclick={handleSubscribe} disabled={subscribing || !updateEmail.trim()}>
 					{subscribing ? 'subscribing...' : subscribed ? 'subscribed!' : 'subscribe'}
 				</button>
 			{/if}
@@ -291,7 +426,6 @@
 	<!-- Identity & backup -->
 	<div class="card">
 		<button class="card-header toggle-header" onclick={() => showIdentity = !showIdentity}>
-			<span class="dot" class:green={!!identity.identity}></span>
 			<span class="title">identity</span>
 			<span class="chevron">{showIdentity ? '−' : '+'}</span>
 		</button>
@@ -317,6 +451,14 @@
 					{:else}
 					<p class="muted">no identity loaded</p>
 				{/if}
+				<div class="reset-row">
+					<button class="danger" onclick={handleReset} disabled={resetting}>
+						{resetting ? 'resetting...' : confirmReset ? 'tap again to confirm' : 'delete identity & reset'}
+					</button>
+					{#if confirmReset && !resetting}
+						<span class="reset-note">this will delete your identity and all local data. you cannot undo this.</span>
+					{/if}
+				</div>
 			</div>
 		{/if}
 	</div>
@@ -377,6 +519,13 @@
 		flex-direction: column;
 		gap: 12px;
 	}
+	.page-top {
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		background: var(--bg);
+		margin-bottom: -12px;
+	}
 	/* Secondary cards (collapsible sections) */
 	.card {
 		border: 1px solid var(--border);
@@ -411,6 +560,11 @@
 		margin-left: auto;
 		color: var(--text-muted);
 		font-size: 14px;
+	}
+	.coming-soon {
+		margin-left: auto;
+		color: var(--text-tertiary);
+		font-size: 12px;
 	}
 	.title {
 		color: var(--text-muted);
@@ -527,18 +681,150 @@
 	.muted {
 		color: var(--text-muted);
 	}
+	/* Tags */
+	.tag-section {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.tag-label {
+		font-size: 14px;
+		color: var(--text-muted);
+	}
+	.tag-container {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		padding: 10px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		min-height: 44px;
+		align-items: center;
+	}
+	.tag-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 4px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		font-size: 13px;
+		color: var(--text);
+		line-height: 1.3;
+	}
+	.tag-remove {
+		border: none;
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 11px;
+		padding: 0 2px;
+		cursor: pointer;
+		min-height: auto;
+		min-width: auto;
+		line-height: 1;
+	}
+	@media (hover: hover) {
+		.tag-remove:hover { color: var(--danger); }
+	}
+	.tag-input {
+		border: none;
+		outline: none;
+		background: transparent;
+		font-size: 14px;
+		color: var(--text);
+		flex: 1;
+		min-width: 100px;
+		padding: 0;
+	}
+	.tag-input::placeholder {
+		color: var(--text-muted);
+		opacity: 0.6;
+	}
+	.popular-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.popular-tag {
+		padding: 4px 10px;
+		font-size: 12px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.popular-tag:hover {
+			color: var(--text);
+			border-color: var(--text-muted);
+		}
+	}
+	.email-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.email-input {
+		min-height: 40px;
+		padding: 8px 12px;
+		font-size: 14px;
+	}
 	.checkbox-row {
 		flex-direction: row;
 		align-items: center;
 		gap: 8px;
 	}
 	.checkbox-row input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		accent-color: var(--white);
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
+		border: 1.5px solid var(--text-muted);
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+		position: relative;
+	}
+	.checkbox-row input[type="checkbox"]:checked {
+		background: var(--white);
+		border-color: var(--white);
+	}
+	.checkbox-row input[type="checkbox"]:checked::after {
+		content: '✓';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		font-size: 13px;
+		color: #000;
+		line-height: 1;
 	}
 	.checkbox-row span {
 		font-size: 14px;
 		color: var(--text-muted);
+	}
+	.reset-row {
+		margin-top: 16px;
+		padding-top: 16px;
+		border-top: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.danger {
+		background: #dc2626;
+		color: white;
+		border: none;
+	}
+	.danger:hover {
+		background: #b91c1c;
+	}
+	.reset-note {
+		font-size: 11px;
+		color: #dc2626;
+		line-height: 1.5;
 	}
 </style>

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { db } from '../db';
-import { profiles, blocks } from '../db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { profiles, blocks, flagThrottles } from '../db/schema';
+import { eq, and, sql } from 'drizzle-orm';
+import { nanoid } from 'nanoid';
 
 export const profileRoutes = new Hono();
 
@@ -13,6 +14,8 @@ export const profileRoutes = new Hono();
 profileRoutes.get('/discover', async (c) => {
 	const cellsParam = c.req.query('cells');
 	const requesterDid = c.req.query('requesterDid');
+	const limit = Math.min(parseInt(c.req.query('limit') ?? '50', 10) || 50, 200);
+	const offset = parseInt(c.req.query('offset') ?? '0', 10) || 0;
 
 	if (!cellsParam) {
 		return c.json({ error: 'cells parameter required' }, 400);
@@ -51,9 +54,18 @@ profileRoutes.get('/discover', async (c) => {
 		avatarNonce: profiles.avatarNonce,
 		instagram: profiles.instagram,
 		profileLink: profiles.profileLink,
+		tags: profiles.tags,
+		profileKey: profiles.profileKey,
+		encryptedFields: profiles.encryptedFields,
+		encryptedFieldsNonce: profiles.encryptedFieldsNonce,
 		geohashCells: profiles.geohashCells,
 		lastSeen: profiles.lastSeen
 	}).from(profiles).all();
+
+	// Get hidden profiles (flagged with level = 'hidden')
+	const hiddenProfiles = await db.select({ did: flagThrottles.did })
+		.from(flagThrottles).where(eq(flagThrottles.level, 'hidden')).all();
+	const hiddenDids = new Set(hiddenProfiles.map(h => h.did));
 
 	// Hide profiles not seen in over 24 hours
 	const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
@@ -61,6 +73,7 @@ profileRoutes.get('/discover', async (c) => {
 	const matching = allProfiles.filter(p => {
 		if (!p.geohashCells) return false;
 		if (blockedDids.has(p.did)) return false;
+		if (hiddenDids.has(p.did)) return false;
 		// Filter out stale profiles
 		if (p.lastSeen) {
 			const lastSeenMs = p.lastSeen instanceof Date ? p.lastSeen.getTime() : Number(p.lastSeen) * 1000;
@@ -75,7 +88,49 @@ profileRoutes.get('/discover', async (c) => {
 		}
 	});
 
-	const results = matching.map(p => {
+	// Sort by geohash proximity (longest shared prefix = closest) then by lastSeen as tiebreaker
+	// Higher-precision query cells (longer strings) are the requester's actual location
+	const queryCellsByLength = [...cells].sort((a, b) => b.length - a.length);
+
+	function proximityScore(profile: typeof matching[0]): number {
+		try {
+			const profileCells: string[] = JSON.parse(profile.geohashCells!);
+			let best = 0;
+			for (const pc of profileCells) {
+				for (const qc of queryCellsByLength) {
+					// Count shared prefix length
+					const minLen = Math.min(pc.length, qc.length);
+					let shared = 0;
+					for (let i = 0; i < minLen; i++) {
+						if (pc[i] === qc[i]) shared++;
+						else break;
+					}
+					if (shared > best) best = shared;
+					// Early exit — can't do better than this query cell's length
+					if (best >= qc.length) return best;
+				}
+			}
+			return best;
+		} catch { return 0; }
+	}
+
+	// Pre-compute scores to avoid re-calculating during sort
+	const scores = new Map<string, number>();
+	for (const m of matching) scores.set(m.did, proximityScore(m));
+
+	matching.sort((a, b) => {
+		const scoreDiff = (scores.get(b.did) ?? 0) - (scores.get(a.did) ?? 0);
+		if (scoreDiff !== 0) return scoreDiff;
+		// Tiebreak by lastSeen descending
+		const aMs = a.lastSeen instanceof Date ? a.lastSeen.getTime() : Number(a.lastSeen ?? 0) * 1000;
+		const bMs = b.lastSeen instanceof Date ? b.lastSeen.getTime() : Number(b.lastSeen ?? 0) * 1000;
+		return bMs - aMs;
+	});
+
+	const total = matching.length;
+	const page = matching.slice(offset, offset + limit);
+
+	const results = page.map(p => {
 		const profileCells: string[] = JSON.parse(p.geohashCells!);
 		const matchedCell = profileCells.find(pc => cells.some(qc => pc.startsWith(qc) || qc.startsWith(pc))) ?? profileCells[0];
 		return {
@@ -89,12 +144,16 @@ profileRoutes.get('/discover', async (c) => {
 			avatarNonce: p.avatarNonce,
 			instagram: p.instagram,
 			profileLink: p.profileLink,
+			tags: p.tags ? JSON.parse(p.tags) : [],
+			profileKey: p.profileKey,
+			encryptedFields: p.encryptedFields,
+			encryptedFieldsNonce: p.encryptedFieldsNonce,
 			geohashCell: matchedCell,
 			lastSeen: p.lastSeen
 		};
 	});
 
-	return c.json(results);
+	return c.json({ profiles: results, total, limit, offset });
 });
 
 /**
@@ -139,6 +198,29 @@ profileRoutes.get('/search', async (c) => {
 });
 
 /**
+ * GET /profiles/popular-tags
+ */
+profileRoutes.get('/popular-tags', async (c) => {
+	const rows = await db.select({ tags: profiles.tags }).from(profiles).all();
+	const counts = new Map<string, number>();
+	for (const row of rows) {
+		if (!row.tags) continue;
+		try {
+			const parsed = JSON.parse(row.tags) as string[];
+			for (const t of parsed) {
+				const lower = t.toLowerCase();
+				counts.set(lower, (counts.get(lower) ?? 0) + 1);
+			}
+		} catch {}
+	}
+	const sorted = Array.from(counts.entries())
+		.sort((a, b) => b[1] - a[1])
+		.slice(0, 20)
+		.map(([tag]) => tag);
+	return c.json(sorted);
+});
+
+/**
  * GET /profiles/:did
  */
 profileRoutes.get('/:did', async (c) => {
@@ -149,7 +231,11 @@ profileRoutes.get('/:did', async (c) => {
 		return c.json({ error: 'Profile not found' }, 404);
 	}
 
-	return c.json(profile);
+	// Parse tags from JSON string for the response
+	return c.json({
+		...profile,
+		tags: profile.tags ? JSON.parse(profile.tags) : [],
+	});
 });
 
 /**
@@ -161,6 +247,7 @@ profileRoutes.put('/:did', async (c) => {
 		displayName?: string;
 		bio?: string;
 		age?: number;
+		tags?: string[];
 		signedProfileBlob?: string;
 		geohashCells?: string[];
 		avatarMediaId?: string;
@@ -168,12 +255,20 @@ profileRoutes.put('/:did', async (c) => {
 		avatarNonce?: string;
 		instagram?: string;
 		profileLink?: string;
+		profileKey?: string;
+		encryptedFields?: string;
+		encryptedFieldsNonce?: string;
 	}>();
+
+	if (body.age !== undefined && body.age !== null && body.age < 18) {
+		return c.json({ error: 'Must be at least 18' }, 400);
+	}
 
 	await db.update(profiles).set({
 		...(body.displayName && { displayName: body.displayName }),
 		...(body.bio !== undefined && { bio: body.bio }),
 		...(body.age !== undefined && { age: body.age }),
+		...(body.tags !== undefined && { tags: JSON.stringify(body.tags) }),
 		...(body.signedProfileBlob && { signedProfileBlob: body.signedProfileBlob }),
 		...(body.geohashCells && { geohashCells: JSON.stringify(body.geohashCells) }),
 		...(body.avatarMediaId && { avatarMediaId: body.avatarMediaId }),
@@ -181,6 +276,9 @@ profileRoutes.put('/:did', async (c) => {
 		...(body.avatarNonce !== undefined && { avatarNonce: body.avatarNonce }),
 		...(body.instagram !== undefined && { instagram: body.instagram }),
 		...(body.profileLink !== undefined && { profileLink: body.profileLink }),
+		...(body.profileKey !== undefined && { profileKey: body.profileKey }),
+		...(body.encryptedFields !== undefined && { encryptedFields: body.encryptedFields }),
+		...(body.encryptedFieldsNonce !== undefined && { encryptedFieldsNonce: body.encryptedFieldsNonce }),
 		lastSeen: new Date()
 	}).where(eq(profiles.did, did));
 

@@ -5,10 +5,13 @@
 	import { locationStore, hasLocation, requestLocation } from '$lib/stores/location';
 	import { identityStore } from '$lib/stores/identity';
 	import { distanceMeters, center, neighbors, encode, generateDecoyCells } from '$lib/geo/geohash';
-	import { discoverProfiles, updateProfile, listGroups, BASE } from '$lib/api';
+	import { discoverProfiles, updateProfile, listGroups, getDMInvitations, listPendingInvites, BASE } from '$lib/api';
 	import { getConversationId, initChat } from '$lib/services/chat';
 	import { conversationsStore } from '$lib/stores/conversations';
+	import { requestCountStore } from '$lib/stores/requestCount';
 	import { getDecryptedAvatarUrl } from '$lib/services/avatar';
+	import { formatDistance } from '$lib/utils/distance';
+	import { decryptProfileFields } from '$lib/crypto/profile';
 	import ProximityMap from '$lib/components/ProximityMap.svelte';
 
 	let viewMode = $state<'grid' | 'map'>('grid');
@@ -24,6 +27,7 @@
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		tags: string[];
 		geohashCell: string;
 		lastSeen: string;
 		distance?: number;
@@ -41,7 +45,20 @@
 	let loading = $state(false);
 	let locationError = $state(false);
 	let refreshTimer: ReturnType<typeof setInterval> | null = null;
-	let activeFilter = $state<string>('all');
+	// Filter state
+	let tagInput = $state('');
+	let committedTags = $state<Set<string>>(new Set());
+	let selectedGroups = $state<Set<string>>(new Set());
+	let showFilter = $state(false);
+	// Server pagination
+	let serverTotal = $state(0);
+	let serverOffset = $state(0);
+	const SERVER_PAGE_SIZE = 50;
+	let fetchingMore = $state(false);
+	let currentCells = $state<string[]>([]);
+
+	// Pending request sender DIDs (for grid badge)
+	let requestSenderDids = $state<Set<string>>(new Set());
 
 	let myDid = $derived($identityStore.identity?.did);
 	let loaded = $state(false);
@@ -55,22 +72,91 @@
 	// Check if we already have location from the store
 	let hasLoc = $derived($locationStore.geohash !== null);
 
-	// Filtered + sorted profiles based on active filter
+	// Collect all tags with frequency counts for suggestions
+	let tagCounts = $derived.by(() => {
+		const counts = new Map<string, number>();
+		for (const p of allProfiles) {
+			if (p.tags) {
+				for (const t of p.tags) {
+					const lower = t.toLowerCase();
+					counts.set(lower, (counts.get(lower) ?? 0) + 1);
+				}
+			}
+		}
+		return counts;
+	});
+
+	// Tag suggestions: filtered by current input, sorted by frequency, excluding already committed
+	let tagSuggestions = $derived.by(() => {
+		const q = tagInput.trim().toLowerCase();
+		let entries = Array.from(tagCounts.entries())
+			.filter(([tag]) => !committedTags.has(tag));
+		if (q) {
+			entries = entries.filter(([tag]) => tag.includes(q));
+		}
+		return entries
+			.sort((a, b) => b[1] - a[1])
+			.slice(0, 8)
+			.map(([tag, count]) => ({ tag, count }));
+	});
+
+	function commitTag(tag: string) {
+		const t = tag.trim().toLowerCase();
+		if (!t) return;
+		const next = new Set(committedTags);
+		next.add(t);
+		committedTags = next;
+		tagInput = '';
+	}
+
+	function removeTag(tag: string) {
+		const next = new Set(committedTags);
+		next.delete(tag);
+		committedTags = next;
+	}
+
+	function handleTagKeydown(e: KeyboardEvent) {
+		if (e.key === 'Enter' || e.key === ',') {
+			e.preventDefault();
+			commitTag(tagInput);
+		}
+		if (e.key === 'Backspace' && tagInput === '' && committedTags.size > 0) {
+			// Remove the last committed tag on backspace when input is empty
+			const tags = Array.from(committedTags);
+			removeTag(tags[tags.length - 1]);
+		}
+	}
+
+	// Filtered + sorted profiles based on active filters
 	let sortedProfiles = $derived.by(() => {
 		let list = allProfiles;
-		if (activeFilter !== 'all') {
-			list = list.filter(p => p.sharedGroups.some(g => g.id === activeFilter));
+		// Tag filter — match ALL committed tags
+		if (committedTags.size > 0) {
+			list = list.filter(p => {
+				if (!p.tags) return false;
+				const pTags = p.tags.map(t => t.toLowerCase());
+				return Array.from(committedTags).every(ct => pTags.some(pt => pt.includes(ct)));
+			});
+		}
+		// Group filter (OR: in any selected group)
+		if (selectedGroups.size > 0) {
+			list = list.filter(p => p.sharedGroups.some(g => selectedGroups.has(g.id)));
 		}
 		return [...list].sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
 	});
 
+	let activeFilterCount = $derived(
+		committedTags.size + selectedGroups.size
+	);
+
 	// Only show visibleCount profiles (for infinite scroll)
 	let profiles = $derived(sortedProfiles.slice(0, visibleCount));
-	let hasMore = $derived(visibleCount < sortedProfiles.length);
+	let hasMore = $derived(visibleCount < sortedProfiles.length || serverOffset < serverTotal);
 
 	// Reset visible count when filter changes
 	$effect(() => {
-		activeFilter;
+		committedTags;
+		selectedGroups;
 		visibleCount = BATCH_SIZE;
 	});
 
@@ -81,6 +167,9 @@
 
 		// Fire-and-forget chat init
 		initChat().catch(() => {});
+
+		// Fetch pending requests for grid badges
+		fetchRequests(did);
 
 		// Check if location is already available (e.g. from a previous visit)
 		const loc = get(locationStore);
@@ -174,6 +263,7 @@
 					const d = get(identityStore).identity?.did;
 					if (d) {
 						fetchGroups(d);
+						fetchRequests(d);
 						let cells = currentLoc.queryCells;
 						if (currentLoc.lat && currentLoc.lon) {
 							cells = buildExpandingCells(currentLoc.lat, currentLoc.lon);
@@ -192,6 +282,20 @@
 		}
 	});
 
+	async function fetchRequests(did: string) {
+		try {
+			const [dmInvs, groupInvs] = await Promise.all([
+				getDMInvitations(did),
+				listPendingInvites(did),
+			]);
+			const senders = new Set<string>();
+			for (const inv of dmInvs) senders.add(inv.senderDid);
+			for (const inv of groupInvs) senders.add(inv.inviterDid);
+			requestSenderDids = senders;
+			requestCountStore.set(dmInvs.length + groupInvs.length);
+		} catch {}
+	}
+
 	async function fetchGroups(did: string) {
 		try {
 			const groups = await listGroups(did);
@@ -205,40 +309,69 @@
 		}
 	}
 
-	async function fetchProfiles(cells: string[]) {
-		try {
-			const data = await discoverProfiles(cells, myDid ?? undefined);
-			const loc = get(locationStore);
+	function enrichProfiles(data: any[]): NearbyProfile[] {
+		const loc = get(locationStore);
+		const decryptedData = data.filter(p => p.did !== myDid).map(p => {
+			let decryptedBio = p.bio;
+			let decryptedAge = p.age;
+			let decryptedTags: string[] = p.tags ?? [];
 
-			let enriched: NearbyProfile[];
-
-			if (loc.lat && loc.lon) {
-				enriched = data
-					.filter((p) => p.did !== myDid)
-					.map((p) => {
-						const c = center(p.geohashCell);
-						const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
-						const sharedGroups = myGroups
-							.filter(g => g.memberDids.has(p.did))
-							.map(g => ({ id: g.id, name: g.name }));
-						return { ...p, distance: dist, sharedGroups };
-					});
-			} else {
-				enriched = data
-					.filter((p) => p.did !== myDid)
-					.map((p) => {
-						const sharedGroups = myGroups
-							.filter(g => g.memberDids.has(p.did))
-							.map(g => ({ id: g.id, name: g.name }));
-						return { ...p, sharedGroups };
-					});
+			if (p.encryptedFields && p.encryptedFieldsNonce && p.profileKey) {
+				try {
+					const fields = decryptProfileFields(p.encryptedFields, p.encryptedFieldsNonce, p.profileKey);
+					decryptedBio = fields.bio ?? '';
+					decryptedAge = fields.age;
+					decryptedTags = fields.tags ?? [];
+				} catch {}
 			}
 
-			allProfiles = enriched;
+			return { ...p, bio: decryptedBio, age: decryptedAge, tags: decryptedTags };
+		});
+
+		if (loc.lat && loc.lon) {
+			return decryptedData.map((p) => {
+				const c = center(p.geohashCell);
+				const dist = distanceMeters(loc.lat!, loc.lon!, c.lat, c.lon);
+				const sharedGroups = myGroups
+					.filter(g => g.memberDids.has(p.did))
+					.map(g => ({ id: g.id, name: g.name }));
+				return { ...p, distance: dist, sharedGroups };
+			});
+		} else {
+			return decryptedData.map((p) => {
+				const sharedGroups = myGroups
+					.filter(g => g.memberDids.has(p.did))
+					.map(g => ({ id: g.id, name: g.name }));
+				return { ...p, sharedGroups };
+			});
+		}
+	}
+
+	async function fetchProfiles(cells: string[]) {
+		try {
+			currentCells = cells;
+			const resp = await discoverProfiles(cells, myDid ?? undefined, SERVER_PAGE_SIZE, 0);
+			serverTotal = resp.total;
+			serverOffset = resp.profiles.length;
+			allProfiles = enrichProfiles(resp.profiles);
 		} catch {
 			allProfiles = [];
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function fetchMoreProfiles() {
+		if (fetchingMore || serverOffset >= serverTotal || !currentCells.length) return;
+		fetchingMore = true;
+		try {
+			const existingDids = new Set(allProfiles.map(p => p.did));
+			const resp = await discoverProfiles(currentCells, myDid ?? undefined, SERVER_PAGE_SIZE, serverOffset);
+			serverOffset += resp.profiles.length;
+			const newProfiles = enrichProfiles(resp.profiles).filter(p => !existingDids.has(p.did));
+			allProfiles = [...allProfiles, ...newProfiles];
+		} catch {} finally {
+			fetchingMore = false;
 		}
 	}
 
@@ -251,7 +384,8 @@
 			const params = new URLSearchParams({
 				peerDid: profile.did,
 				peerName: profile.displayName,
-				peerKey: profile.boxPublicKey
+				peerKey: profile.boxPublicKey,
+				from: 'grid'
 			});
 			goto(`/chat/${groupId}?${params}`);
 		} catch (e) {
@@ -266,15 +400,8 @@
 		return convo?.unreadCount ?? 0;
 	}
 
-	function formatDistance(meters?: number): string {
-		if (!meters) return '';
-		if (meters < 250) return '< 250m';
-		if (meters < 500) return '< 500m';
-		if (meters < 1000) return '< 1km';
-		if (meters < 2000) return '~1km';
-		if (meters < 5000) return '~' + Math.round(meters / 1000) + 'km';
-		if (meters < 50000) return '~' + Math.round(meters / 1000) + 'km';
-		return '~' + Math.round(meters / 1000) + 'km';
+	function hasRequest(did: string): boolean {
+		return requestSenderDids.has(did);
 	}
 
 	type Presence = 'online' | 'idle' | 'away';
@@ -321,11 +448,41 @@
 		return `${BASE}/media/${profile.avatarMediaId}/blob`;
 	}
 
-	let showGroups = $state(false);
 	let isMapActive = $derived(viewMode === 'map' && hasLoc && !loading && !locationError);
 
-	function setFilter(filterId: string) {
-		activeFilter = filterId;
+	// Map viewport change — fetch profiles for the visible area
+	async function handleMapViewportChange(bounds: { north: number; south: number; east: number; west: number }) {
+		if (fetchingMore) return;
+		// Encode corners to geohash cells at precision 5 (~5km) to cover the viewport
+		const centerLat = (bounds.north + bounds.south) / 2;
+		const centerLon = (bounds.east + bounds.west) / 2;
+		const viewCells = new Set<string>();
+		// Sample grid of points across the viewport
+		for (const lat of [bounds.north, centerLat, bounds.south]) {
+			for (const lon of [bounds.west, centerLon, bounds.east]) {
+				const h5 = encode(lat, lon, 5);
+				viewCells.add(h5);
+				for (const n of neighbors(h5)) viewCells.add(n);
+			}
+		}
+		// Merge with current cells and fetch if we have new cells
+		const newCells = Array.from(viewCells).filter(c => !currentCells.includes(c));
+		if (newCells.length === 0) return;
+		// Add new cells to current set
+		currentCells = [...currentCells, ...newCells];
+		// Fetch with full cell set from offset 0 (server will return new matches)
+		fetchingMore = true;
+		try {
+			const existingDids = new Set(allProfiles.map(p => p.did));
+			const resp = await discoverProfiles(currentCells, myDid ?? undefined, SERVER_PAGE_SIZE, 0);
+			serverTotal = resp.total;
+			const newProfiles = enrichProfiles(resp.profiles).filter(p => !existingDids.has(p.did));
+			if (newProfiles.length > 0) {
+				allProfiles = [...allProfiles, ...newProfiles];
+			}
+		} catch {} finally {
+			fetchingMore = false;
+		}
 	}
 
 	// Infinite scroll: IntersectionObserver on a sentinel element
@@ -336,9 +493,12 @@
 		const observer = new IntersectionObserver((entries) => {
 			if (entries[0]?.isIntersecting && hasMore && !loadingMore) {
 				loadingMore = true;
-				// Small delay so the UI can paint
 				setTimeout(() => {
 					visibleCount += BATCH_SIZE;
+					// If we've shown all locally loaded profiles but server has more, fetch next page
+					if (visibleCount >= allProfiles.length && serverOffset < serverTotal) {
+						fetchMoreProfiles();
+					}
 					loadingMore = false;
 				}, 100);
 			}
@@ -350,44 +510,76 @@
 
 <div class="grid-page" class:map-mode={isMapActive}>
 	<div class="page-container grid-container">
-		<!-- Tab bar: grid/map toggle + groups filter -->
-		<div class="tab-bar grid-tabs">
-			<button class="tab" class:active={viewMode === 'grid'} onclick={() => viewMode = 'grid'}>grid</button>
-			<button class="tab" class:active={viewMode === 'map'} onclick={() => viewMode = 'map'}>map</button>
-			{#if activeFilter !== 'all'}
-				{@const g = myGroups.find(g => g.id === activeFilter)}
-				<button
-					class="tab active"
-					onclick={() => { setFilter('all'); showGroups = false; }}
-				>{g?.name ?? 'group'} ×</button>
-			{:else}
-				<button
-					class="tab"
-					class:open={showGroups}
-					onclick={() => showGroups = !showGroups}
-				>groups +</button>
+		<div class="grid-top">
+			<!-- Tab bar: grid/map toggle + filter -->
+			<div class="tab-bar grid-tabs">
+				<button class="tab" class:active={viewMode === 'grid'} onclick={() => { viewMode = 'grid'; showFilter = false; }}>grid</button>
+				<button class="tab" class:active={viewMode === 'map'} onclick={() => { viewMode = 'map'; showFilter = false; }}>map</button>
+				<button class="tab" class:active={showFilter} onclick={() => showFilter = !showFilter}>
+					filter{#if activeFilterCount > 0}&nbsp;({activeFilterCount}){/if}
+				</button>
+			</div>
+
+			{#if showFilter}
+				<div class="filter-dropdown">
+					{#if committedTags.size > 0}
+						<div class="tags-row">
+							{#each Array.from(committedTags) as tag}
+								<button class="tag-pill active" onclick={() => removeTag(tag)}>{tag} ×</button>
+							{/each}
+						</div>
+					{/if}
+					<input
+						type="text"
+						class="filter-search"
+						placeholder={committedTags.size > 0 ? 'add another tag...' : 'search tags...'}
+						bind:value={tagInput}
+						onkeydown={handleTagKeydown}
+					/>
+					{#if tagSuggestions.length > 0}
+						<div class="tags-row">
+							{#each tagSuggestions as { tag }}
+								<button
+									class="tag-pill"
+									class:active={committedTags.has(tag)}
+									onclick={() => committedTags.has(tag) ? removeTag(tag) : commitTag(tag)}
+								>{tag}</button>
+							{/each}
+						</div>
+					{/if}
+					{#if myGroups.length > 0}
+						<div class="groups-section">
+							<span class="groups-label">groups</span>
+							{#each myGroups as group}
+								<button
+									class="group-row"
+									class:selected={selectedGroups.has(group.id)}
+									onclick={() => {
+										const next = new Set(selectedGroups);
+										if (next.has(group.id)) next.delete(group.id);
+										else next.add(group.id);
+										selectedGroups = next;
+									}}
+								>{group.name}</button>
+							{/each}
+						</div>
+					{:else}
+						<div class="groups-section">
+							<a href="/chat" class="group-row create">+ create group</a>
+						</div>
+					{/if}
+					{#if activeFilterCount > 0}
+						<button class="filter-clear" onclick={() => { committedTags = new Set(); tagInput = ''; selectedGroups = new Set(); }}>clear filters</button>
+					{/if}
+				</div>
 			{/if}
 		</div>
 
-		{#if showGroups && activeFilter === 'all'}
-			<div class="groups-dropdown">
-				{#each myGroups as group}
-					<button
-						class="group-option"
-						onclick={() => { setFilter(group.id); showGroups = false; }}
-					>{group.name}</button>
-				{/each}
-				{#if myGroups.length === 0}
-					<a href="/chat" class="group-option create" onclick={() => showGroups = false}>+ create group</a>
-				{/if}
-			</div>
-		{/if}
-
 		{#if !hasLoc && !loading && !locationError}
 			<div class="location-prompt">
-				<p class="prompt-title">share your location to see who's&nbsp;nearby.</p>
+				<p class="prompt-title">share your location to see who's&nbsp;nearby</p>
 				<button onclick={enableLocation}>enable location</button>
-				<p class="prompt-detail">Your location is approximate. We add nearby areas to prevent exact positioning.</p>
+				<p class="prompt-detail">nearby areas are added to prevent exact positioning</p>
 			</div>
 		{:else if loading}
 			<p class="status">scanning...</p>
@@ -402,11 +594,12 @@
 			<div class="map-wrapper">
 				{#if loc.lat && loc.lon}
 					<ProximityMap
-						profiles={profiles}
+						profiles={sortedProfiles}
 						userLat={loc.lat}
 						userLon={loc.lon}
-						{activeFilter}
+						activeFilter={'all'}
 						groups={myGroups.map(g => ({ id: g.id, name: g.name }))}
+						onViewportChange={handleMapViewportChange}
 					/>
 				{/if}
 			</div>
@@ -416,47 +609,29 @@
 			<div class="photo-grid">
 				{#each profiles as profile}
 					{@const unread = unreadFrom(profile.did)}
+					{@const hasReq = hasRequest(profile.did)}
 					{@const presence = getPresence(profile.lastSeen)}
 					{@const url = avatarUrl(profile)}
-					{@const isGroupMember = profile.sharedGroups.length > 0}
-					<button
-						class="tile"
-						class:muted={!isGroupMember && activeFilter === 'all' && myGroups.length > 0}
-						onclick={() => openChat(profile)}
-					>
-						{#if url}
-							<img src={url} alt={profile.displayName} class="tile-img" loading="lazy" />
-						{:else}
-							<div class="tile-placeholder">
-								<span class="tile-initial">{getInitials(profile.displayName)}</span>
-							</div>
-						{/if}
-
-						<!-- Presence dot -->
-						<span class="tile-presence {presence}"></span>
-
-						<!-- Unread badge -->
-						{#if unread > 0}
-							<span class="tile-badge">{unread}</span>
-						{/if}
-
-						<!-- Group badges -->
-						{#if isGroupMember}
-							<div class="group-badges">
-								{#each profile.sharedGroups as group}
-									<span class="group-badge">{group.name}</span>
-								{/each}
-							</div>
-						{/if}
-
-						<!-- Bottom overlay with name + distance -->
-						<div class="tile-overlay">
-							<span class="tile-name">
-								{profile.displayName}{#if profile.age}, {profile.age}{/if}
-							</span>
-							{#if profile.distance}
-								<span class="tile-dist">{formatDistance(profile.distance)}</span>
+					{@const dist = formatDistance(profile.distance)}
+					<button class="cell" onclick={() => openChat(profile)}>
+						<div class="cell-img {presence}">
+							{#if url}
+								<img src={url} alt={profile.displayName} loading="lazy" />
+							{:else}
+								<svg viewBox="0 0 3 4" xmlns="http://www.w3.org/2000/svg" class="cell-spacer"></svg>
+								<div class="cell-placeholder">
+									<span class="cell-initial">{getInitials(profile.displayName)}</span>
+								</div>
 							{/if}
+							{#if unread > 0}
+								<span class="cell-badge">{unread}</span>
+							{:else if hasReq}
+								<span class="cell-badge request-badge">!</span>
+							{/if}
+						</div>
+						<div class="cell-label">
+							<span class="cell-name">{profile.displayName}</span>
+							{#if dist}<span class="cell-dist">{dist}</span>{/if}
 						</div>
 					</button>
 				{/each}
@@ -471,7 +646,6 @@
 		{/if}
 	</div>
 
-	<p class="privacy-hint">distances are approximate to protect everyone's&nbsp;privacy.</p>
 </div>
 
 <style>
@@ -481,7 +655,8 @@
 	.grid-page.map-mode {
 		display: flex;
 		flex-direction: column;
-		height: calc(100dvh - var(--nav-height) - var(--safe-bottom) - 24px);
+		height: calc(100dvh - max(12px, var(--safe-top)) - var(--nav-height) - var(--safe-bottom));
+		margin-bottom: -24px; /* eat main padding-bottom (16px) + app nav gap (8px) */
 		overflow: hidden;
 	}
 	.grid-page.map-mode .grid-container {
@@ -490,9 +665,26 @@
 		flex-direction: column;
 		min-height: 0;
 	}
+	.grid-page.map-mode .grid-top {
+		flex-shrink: 0;
+		padding-top: 0;
+		margin-top: 0;
+	}
+	.grid-container {
+		overflow: visible !important;
+		border: none;
+		border-radius: 0;
+	}
+	.grid-top {
+		position: sticky;
+		top: 0;
+		z-index: 20;
+		background: var(--bg);
+		padding-top: max(12px, var(--safe-top));
+		margin-top: calc(-1 * max(12px, var(--safe-top)));
+	}
 	.grid-tabs {
-		border-top: none;
-		border-bottom: 1px solid var(--border);
+		border: 1px solid var(--border);
 	}
 	.grid-tabs .tab {
 		min-height: calc(48px - 1px);
@@ -503,37 +695,105 @@
 		overflow: hidden;
 	}
 
-	/* Groups dropdown */
-	.groups-dropdown {
+	/* Filter dropdown */
+	.filter-dropdown {
 		display: flex;
 		flex-direction: column;
-		border-bottom: 1px solid var(--border);
+		gap: 14px;
+		padding: 16px;
+		border: 1px solid var(--border);
+		border-top: none;
+		z-index: 2;
 	}
-	.group-option {
-		padding: 12px 16px;
-		font-size: 14px;
+	.filter-search {
+		width: 100%;
+		padding: 10px 12px;
+		font-size: 13px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: transparent;
+		color: var(--text);
+		outline: none;
+		box-sizing: border-box;
+	}
+	.filter-search::placeholder {
+		color: var(--text-tertiary);
+	}
+	.tags-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.tag-pill {
+		padding: 4px 10px;
+		font-size: 12px;
+		border: 1px solid var(--border);
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+	.tag-pill.active {
+		color: var(--text);
+		border-color: var(--text-muted);
+		background: var(--bg-hover);
+	}
+	@media (hover: hover) {
+		.tag-pill:hover {
+			color: var(--text);
+			border-color: var(--text-muted);
+		}
+	}
+	.groups-section {
+		border-top: 1px solid var(--border);
+		padding-top: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.groups-label {
+		color: var(--text-tertiary);
+		font-size: 11px;
+		margin-bottom: 4px;
+	}
+	.group-row {
+		padding: 8px 0;
+		font-size: 13px;
 		border: none;
+		border-bottom: 1px solid var(--bg-hover);
 		border-radius: 0;
 		background: transparent;
 		color: var(--text-muted);
 		cursor: pointer;
 		text-align: left;
-		min-height: 48px;
-		display: flex;
-		align-items: center;
 		text-decoration: none;
+		display: block;
 	}
-	.group-option:not(:last-child) {
-		border-bottom: 1px solid var(--border);
+	.group-row.selected {
+		color: var(--text);
 	}
 	@media (hover: hover) {
-		.group-option:hover {
-			background: var(--bg-hover);
+		.group-row:hover {
 			color: var(--text);
 		}
 	}
-	.group-option.create {
+	.group-row.create {
 		color: var(--text-muted);
+	}
+	.filter-clear {
+		align-self: flex-end;
+		padding: 0;
+		font-size: 12px;
+		border: none;
+		border-radius: 0;
+		background: transparent;
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+	@media (hover: hover) {
+		.filter-clear:hover {
+			color: var(--text);
+		}
 	}
 
 	/* Status / empty states */
@@ -573,76 +833,83 @@
 		text-align: center;
 		line-height: 1.5;
 	}
-	.privacy-hint {
-		color: var(--text-tertiary);
-		font-size: 12px;
-		text-align: center;
-		margin-top: 16px;
-	}
 
-	/* Photo grid */
+	/* Photo grid — Are.na style */
 	.photo-grid {
 		display: grid;
 		grid-template-columns: repeat(3, 1fr);
-		gap: 2px;
+		gap: 10px;
+		padding-top: 10px;
 	}
-	.tile {
-		position: relative;
-		aspect-ratio: 3 / 4;
-		overflow: hidden;
+	.cell {
+		display: flex;
+		flex-direction: column;
 		border: none;
 		border-radius: 0;
 		padding: 0;
 		cursor: pointer;
-		background: var(--bg-surface);
-		transition: opacity 0.1s;
+		background: transparent;
+		text-align: left;
 		min-height: auto;
+		min-width: 0;
 	}
 	@media (hover: hover) {
-		.tile:hover {
+		.cell:hover {
 			opacity: 0.85;
 		}
 	}
-	.tile.muted {
-		opacity: 0.55;
+	.cell-img {
+		position: relative;
+		overflow: hidden;
+		background: var(--bg-surface);
 	}
-	@media (hover: hover) {
-		.tile.muted:hover {
-			opacity: 0.45;
-		}
-	}
-	.tile-img {
+	.cell-img img {
 		width: 100%;
-		height: 100%;
+		height: auto;
+		aspect-ratio: 3 / 4;
 		object-fit: cover;
 		display: block;
 	}
-	.tile-placeholder {
+	.cell-spacer {
 		width: 100%;
-		height: 100%;
-		background: var(--bg-surface);
+		display: block;
+	}
+	.cell-img.online { border-bottom: 1px solid var(--online); }
+	.cell-placeholder {
+		position: absolute;
+		inset: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
-	.tile-initial {
+	.cell-initial {
 		font-size: 28px;
 		color: var(--text-tertiary);
 		font-weight: 300;
 	}
-	.tile-presence {
-		position: absolute;
-		top: 6px;
-		left: 6px;
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		border: 1.5px solid rgba(0, 0, 0, 0.5);
+	.cell-label {
+		padding: 6px 0 0;
+		display: flex;
+		align-items: baseline;
+		gap: 4px;
+		min-width: 0;
 	}
-	.tile-presence.online { background: var(--online); }
-	.tile-presence.idle { background: var(--idle); }
-	.tile-presence.away { background: var(--offline); }
-	.tile-badge {
+	.cell-name {
+		font-size: 12px;
+		font-family: var(--font-mono);
+		color: var(--text-muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		min-width: 0;
+	}
+	.cell-dist {
+		font-size: 11px;
+		color: var(--text-tertiary);
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+	.cell-badge {
 		position: absolute;
 		top: 4px;
 		right: 4px;
@@ -656,52 +923,8 @@
 		text-align: center;
 		padding: 0 5px;
 	}
-	.group-badges {
-		position: absolute;
-		top: 6px;
-		right: 6px;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		align-items: flex-end;
-	}
-	.group-badge {
-		background: rgba(0, 0, 0, 0.7);
-		color: var(--white);
-		font-size: 10px;
-		padding: 2px 6px;
-		border-radius: 1px;
-		white-space: nowrap;
-		max-width: 80px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		line-height: 1.3;
-	}
-	.tile-overlay {
-		position: absolute;
-		bottom: 0;
-		left: 0;
-		right: 0;
-		padding: 28px 8px 8px;
-		background: linear-gradient(transparent, rgba(0,0,0,0.85));
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-	.tile-name {
-		color: #fff;
-		font-size: 13px;
-		font-weight: 500;
-		line-height: 1.3;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
-	}
-	.tile-dist {
-		color: rgba(255, 255, 255, 0.6);
-		font-size: 12px;
-		text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+	.request-badge {
+		background: var(--text-muted);
 	}
 	.load-more {
 		display: flex;

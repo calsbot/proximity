@@ -5,7 +5,7 @@
 /** API base: env var in dev, same origin in production. */
 export const BASE = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : '');
 
-async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
+export async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
 	const res = await fetch(`${BASE}${path}`, {
 		headers: { 'Content-Type': 'application/json', ...opts.headers as Record<string, string> },
 		...opts
@@ -32,12 +32,16 @@ export function updateProfile(did: string, data: {
 	displayName?: string;
 	bio?: string;
 	age?: number;
+	tags?: string[];
 	geohashCells?: string[];
 	avatarMediaId?: string;
 	avatarKey?: string;
 	avatarNonce?: string;
 	instagram?: string;
 	profileLink?: string;
+	profileKey?: string;
+	encryptedFields?: string;
+	encryptedFieldsNonce?: string;
 }) {
 	return request<{ ok: boolean }>(`/profiles/${encodeURIComponent(did)}`, {
 		method: 'PUT',
@@ -45,23 +49,36 @@ export function updateProfile(did: string, data: {
 	});
 }
 
-export function discoverProfiles(cells: string[], requesterDid?: string) {
-	let url = `/profiles/discover?cells=${cells.join(',')}`;
+export interface DiscoverProfile {
+	did: string;
+	displayName: string;
+	bio: string;
+	age: number | null;
+	tags: string[];
+	boxPublicKey: string | null;
+	avatarMediaId: string | null;
+	avatarKey: string | null;
+	avatarNonce: string | null;
+	instagram: string | null;
+	profileLink: string | null;
+	profileKey: string | null;
+	encryptedFields: string | null;
+	encryptedFieldsNonce: string | null;
+	geohashCell: string;
+	lastSeen: string;
+}
+
+export interface DiscoverResponse {
+	profiles: DiscoverProfile[];
+	total: number;
+	limit: number;
+	offset: number;
+}
+
+export function discoverProfiles(cells: string[], requesterDid?: string, limit = 50, offset = 0) {
+	let url = `/profiles/discover?cells=${cells.join(',')}&limit=${limit}&offset=${offset}`;
 	if (requesterDid) url += `&requesterDid=${encodeURIComponent(requesterDid)}`;
-	return request<Array<{
-		did: string;
-		displayName: string;
-		bio: string;
-		age: number | null;
-		boxPublicKey: string | null;
-		avatarMediaId: string | null;
-		avatarKey: string | null;
-		avatarNonce: string | null;
-		instagram: string | null;
-		profileLink: string | null;
-		geohashCell: string;
-		lastSeen: string;
-	}>>(url);
+	return request<DiscoverResponse>(url);
 }
 
 export function searchProfiles(query: string, requesterDid?: string) {
@@ -86,6 +103,7 @@ export function getProfile(did: string) {
 		displayName: string;
 		bio: string;
 		age: number | null;
+		tags: string[];
 		publicKey: string | null;
 		boxPublicKey: string | null;
 		avatarMediaId: string | null;
@@ -93,9 +111,16 @@ export function getProfile(did: string) {
 		avatarNonce: string | null;
 		instagram: string | null;
 		profileLink: string | null;
+		profileKey: string | null;
+		encryptedFields: string | null;
+		encryptedFieldsNonce: string | null;
 		geohashCells: string;
 		lastSeen: string;
 	}>(`/profiles/${encodeURIComponent(did)}`);
+}
+
+export function getPopularTags() {
+	return request<string[]>('/profiles/popular-tags');
 }
 
 // --- Messages ---
@@ -119,18 +144,28 @@ export function sendMessage(data: {
 export function fetchMessages(did: string, since?: string) {
 	const params = new URLSearchParams({ did });
 	if (since) params.set('since', since);
-	return request<Array<{
-		id: string;
-		groupId: string;
-		senderDid: string;
-		recipientDid: string;
-		epoch: number;
-		ciphertext: string;
-		nonce: string;
-		dhPublicKey?: string;
-		previousCounter?: number;
-		createdAt: string;
-	}>>(`/messages?${params}`);
+	return request<{
+		messages: Array<{
+			id: string;
+			groupId: string;
+			senderDid: string;
+			recipientDid: string;
+			epoch: number;
+			ciphertext: string;
+			nonce: string;
+			dhPublicKey?: string;
+			previousCounter?: number;
+			createdAt: string;
+		}>;
+		sealed: Array<{
+			id: string;
+			recipientDid: string;
+			sealedPayload: string;
+			ephemeralPublicKey: string;
+			nonce: string;
+			createdAt: string;
+		}>;
+	}>(`/messages?${params}`);
 }
 
 // --- Groups ---
@@ -176,6 +211,9 @@ export function listPendingInvites(did: string) {
 		groupId: string;
 		inviterDid: string;
 		groupName: string;
+		groupDescription: string;
+		memberCount: number;
+		inviterDisplayName: string;
 		createdAt: string;
 	}>>(`/groups/invites/pending?did=${encodeURIComponent(did)}`);
 }
@@ -201,12 +239,19 @@ export function kickMember(groupId: string, did: string, targetDid: string) {
 	});
 }
 
+export function transferAdmin(groupId: string, did: string, targetDid: string) {
+	return request<{ ok: boolean }>(`/groups/${groupId}/transfer-admin`, {
+		method: 'POST',
+		body: JSON.stringify({ did, targetDid })
+	});
+}
+
 // --- Invite Links ---
 
-export function setInviteLinkHash(groupId: string, did: string, inviteKeyHash: string) {
+export function setInviteLinkHash(groupId: string, did: string, inviteKeyHash: string, opts?: { maxUses?: number | null; expiresInHours?: number | null }) {
 	return request<{ ok: boolean }>(`/groups/${groupId}/invite-link`, {
 		method: 'POST',
-		body: JSON.stringify({ did, inviteKeyHash })
+		body: JSON.stringify({ did, inviteKeyHash, maxUses: opts?.maxUses, expiresInHours: opts?.expiresInHours })
 	});
 }
 
@@ -238,6 +283,27 @@ export function respondToJoinRequest(groupId: string, requestId: string, did: st
 		method: 'POST',
 		body: JSON.stringify({ did, action })
 	});
+}
+
+export function listMyAdminJoinRequests(did: string) {
+	return request<Array<{
+		id: string;
+		groupId: string;
+		groupName: string;
+		requesterDid: string;
+		requesterName: string;
+		createdAt: string;
+	}>>(`/groups/my-admin-join-requests?did=${encodeURIComponent(did)}`);
+}
+
+export function listMyPendingRequests(did: string) {
+	return request<Array<{
+		id: string;
+		groupId: string;
+		groupName: string;
+		status: string;
+		createdAt: string;
+	}>>(`/groups/my-pending-requests?did=${encodeURIComponent(did)}`);
 }
 
 export function revokeInviteLink(groupId: string, did: string) {
@@ -274,6 +340,44 @@ export function reportUser(reporterDid: string, reportedDid: string, reason: str
 	});
 }
 
+export function submitFlag(data: {
+	flaggerDid: string;
+	flaggedDid: string;
+	category: string;
+	signedBlob: string;
+	signature: string;
+}) {
+	return request<{ ok: boolean }>('/moderation/flag', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function getFlagStatus(did: string) {
+	return request<{
+		level: 'none' | 'throttled' | 'hidden';
+		reason?: string;
+		effectiveAt?: string;
+		expiresAt?: string;
+		appealedAt?: string;
+		expired?: boolean;
+	}>(`/moderation/flag-status?did=${encodeURIComponent(did)}`);
+}
+
+export function submitAppeal(did: string) {
+	return request<{ ok: boolean }>('/moderation/appeal', {
+		method: 'POST',
+		body: JSON.stringify({ did })
+	});
+}
+
+export function checkCsam(mediaId: string, perceptualHash: string) {
+	return request<{ blocked: boolean }>('/moderation/check-csam', {
+		method: 'POST',
+		body: JSON.stringify({ mediaId, perceptualHash })
+	});
+}
+
 // --- Group Keys ---
 
 export function storeGroupKeys(groupId: string, senderDid: string, keys: Array<{ memberDid: string; wrappedKey: string; wrappedKeyNonce: string }>, epoch: number) {
@@ -298,13 +402,14 @@ export function getMyGroupKeys(groupId: string, did: string) {
 
 // --- Media ---
 
-export async function uploadMedia(uploaderDid: string, encryptedFile: Blob, mimeType: string, mediaKeyWrapped?: string, viewOnce?: boolean) {
+export async function uploadMedia(uploaderDid: string, encryptedFile: Blob, mimeType: string, mediaKeyWrapped?: string, viewOnce?: boolean, groupId?: string) {
 	const formData = new FormData();
 	formData.append('file', encryptedFile);
 	formData.append('uploaderDid', uploaderDid);
 	formData.append('mimeType', mimeType);
 	if (mediaKeyWrapped) formData.append('mediaKeyWrapped', mediaKeyWrapped);
 	if (viewOnce) formData.append('viewOnce', 'true');
+	if (groupId) formData.append('groupId', groupId);
 
 	const res = await fetch(`${BASE}/media/upload`, {
 		method: 'POST',
@@ -338,6 +443,153 @@ export function notifyMediaViewed(mediaId: string, did: string) {
 	return request<{ ok: boolean }>(`/media/${mediaId}/viewed`, {
 		method: 'POST',
 		body: JSON.stringify({ did })
+	});
+}
+
+// --- Sealed Media Upload ---
+
+export async function uploadMediaSealed(deliveryToken: string, encryptedFile: Blob, mimeType: string, viewOnce?: boolean, groupId?: string) {
+	const formData = new FormData();
+	formData.append('file', encryptedFile);
+	formData.append('deliveryToken', deliveryToken);
+	formData.append('mimeType', mimeType);
+	if (viewOnce) formData.append('viewOnce', 'true');
+	if (groupId) formData.append('groupId', groupId);
+
+	const res = await fetch(`${BASE}/media/upload-sealed`, {
+		method: 'POST',
+		body: formData
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({}));
+		throw new Error(body.error || `sealed upload failed: ${res.status}`);
+	}
+	return res.json() as Promise<{ ok: boolean; mediaId: string }>;
+}
+
+// --- Sealed Sender ---
+
+export function registerDeliveryToken(did: string, tokenHash: string) {
+	return request<{ ok: boolean }>('/messages/delivery-token', {
+		method: 'POST',
+		body: JSON.stringify({ did, tokenHash })
+	});
+}
+
+export function sendSealedMessage(data: {
+	recipientDid: string;
+	deliveryToken: string;
+	sealedPayload: string;
+	ephemeralPublicKey: string;
+	nonce: string;
+}) {
+	return request<{ ok: boolean; id: string }>('/messages/sealed', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function registerGroupDeliveryToken(groupId: string, tokenHash: string, force?: boolean) {
+	return request<{ ok: boolean; exists?: boolean }>('/messages/group-delivery-token', {
+		method: 'POST',
+		body: JSON.stringify({ groupId, tokenHash, ...(force ? { force: true } : {}) })
+	});
+}
+
+export function sendSealedGroupMessage(data: {
+	groupId: string;
+	deliveryToken: string;
+	ciphertext: string;
+	nonce: string;
+	epoch: number;
+}) {
+	return request<{ ok: boolean; ids: string[] }>('/messages/sealed-group', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+// --- DM Invitations ---
+
+export function sendDMInvitation(data: {
+	senderDid: string;
+	recipientDid: string;
+	groupId: string;
+	senderDisplayName: string;
+	senderAvatarMediaId?: string;
+	senderAvatarKey?: string;
+	senderAvatarNonce?: string;
+	senderGeohashCell?: string;
+	firstMessageCiphertext: string;
+	firstMessageNonce: string;
+	firstMessageEpoch: number;
+	firstMessageDhPublicKey?: string;
+	firstMessagePreviousCounter?: number;
+}) {
+	return request<{ ok: boolean; id: string }>('/invitations/dm', {
+		method: 'POST',
+		body: JSON.stringify(data)
+	});
+}
+
+export function getDMInvitations(did: string) {
+	return request<Array<{
+		id: string;
+		senderDid: string;
+		recipientDid: string;
+		groupId: string;
+		senderDisplayName: string;
+		senderAvatarMediaId: string | null;
+		senderAvatarKey: string | null;
+		senderAvatarNonce: string | null;
+		senderGeohashCell: string | null;
+		senderBoxPublicKey: string | null;
+		firstMessageCiphertext: string;
+		firstMessageNonce: string;
+		firstMessageEpoch: number;
+		firstMessageDhPublicKey: string | null;
+		firstMessagePreviousCounter: number | null;
+		createdAt: string;
+	}>>(`/invitations/dm?did=${encodeURIComponent(did)}`);
+}
+
+export function acceptDMInvitation(id: string) {
+	return request<{ ok: boolean; groupId: string }>(`/invitations/dm/${id}/accept`, {
+		method: 'POST'
+	});
+}
+
+export function blockDMInvitation(id: string) {
+	return request<{ ok: boolean }>(`/invitations/dm/${id}/block`, {
+		method: 'POST'
+	});
+}
+
+export function declineDMInvitation(id: string) {
+	return request<{ ok: boolean }>(`/invitations/dm/${id}/decline`, {
+		method: 'POST'
+	});
+}
+
+export function checkDmAccepted(groupId: string) {
+	return request<{ accepted: boolean }>(`/invitations/dm-accepted?groupId=${encodeURIComponent(groupId)}`);
+}
+
+export function leaveDM(groupId: string, did: string) {
+	return request<{ ok: boolean }>('/invitations/dm-leave', {
+		method: 'POST',
+		body: JSON.stringify({ groupId, did })
+	});
+}
+
+export function getDMStatus(groupId: string) {
+	return request<Array<{ leaverDid: string; createdAt: string }>>(`/invitations/dm-status?groupId=${encodeURIComponent(groupId)}`);
+}
+
+export function clearDMLeave(groupId: string) {
+	return request<{ ok: boolean }>('/invitations/dm-leave', {
+		method: 'DELETE',
+		body: JSON.stringify({ groupId })
 	});
 }
 

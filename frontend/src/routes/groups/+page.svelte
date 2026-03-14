@@ -301,20 +301,22 @@
 								</div>
 								<span class="role">{group.role}</span>
 							</a>
-							<div class="row-actions">
-								<button
-									class="small link-btn"
-									onclick={(e) => { e.preventDefault(); shareInviteLink(group.id, group.name); }}
-								>
-									send invitation
-								</button>
-								<button
-									class="small link-btn"
-									onclick={(e) => { e.preventDefault(); copyInviteLink(group.id); }}
-								>
-									{copiedGroupId === group.id ? 'copied!' : 'copy link'}
-								</button>
-							</div>
+							{#if group.role === 'admin'}
+								<div class="row-actions">
+									<button
+										class="small link-btn"
+										onclick={(e) => { e.preventDefault(); shareInviteLink(group.id, group.name); }}
+									>
+										send invitation
+									</button>
+									<button
+										class="small link-btn"
+										onclick={(e) => { e.preventDefault(); copyInviteLink(group.id); }}
+									>
+										{copiedGroupId === group.id ? 'copied!' : 'copy link'}
+									</button>
+								</div>
+							{/if}
 						</div>
 					{/each}
 				</div>

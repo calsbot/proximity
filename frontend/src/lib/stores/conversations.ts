@@ -35,12 +35,30 @@ export interface Conversation {
 	lastMessageAt: string;
 	unreadCount: number;
 	left?: boolean; // true if user left or was removed from group
+	peerLeft?: boolean; // true if peer left the DM (user was "abandoned")
 	knownMemberDids?: string[]; // cached member DIDs for generating join/leave system messages
+	knownMemberNames?: Record<string, string>; // did → displayName cache
 	// Serialized conversation keys (Double Ratchet state)
 	keys: SerializedConversationKeys | null;
-	// Group encryption keys: epoch → base64 symmetric key
+	// Sender Keys (Signal-style): senderDid → base64 key
+	senderKeys?: Record<string, string>;
+	// My own sender key for this group (base64)
+	mySenderKey?: string;
+	mySenderKeyEpoch?: number;
+	// LEGACY: epoch-based group keys (pre-Sender Keys migration)
 	groupKeys?: Record<number, string>;
 	groupKeyEpoch?: number;
+	// Sealed sender state (DMs)
+	myDeliveryToken?: string; // base64 — our token shared with this peer
+	peerDeliveryToken?: string; // base64 — peer's token they shared with us
+	sealedSenderEnabled?: boolean; // true once both tokens exchanged
+	// Sealed sender state (Groups) — single shared token for all members
+	groupDeliveryToken?: string; // base64 — shared token for this group
+	// Muted — suppresses notifications and unread badge
+	muted?: boolean;
+	// DM invitation accepted — true once the DM has been accepted (or auto-accepted)
+	// Used for first-contact detection: only false when no invitation has been sent/accepted yet
+	dmAccepted?: boolean;
 }
 
 interface SerializedConversationKeys {
@@ -137,11 +155,16 @@ function deserializeLegacyKeys(s: SerializedConversationKeys): ConversationKeys 
 // In-memory store
 export const conversationsStore = writable<Conversation[]>([]);
 
-// --- IndexedDB persistence ---
+// --- IndexedDB persistence (namespaced per user DID) ---
+
+let currentDbDid: string | null = null;
 
 async function getDb() {
+	if (!currentDbDid) throw new Error('Conversation store not initialized — call loadConversations(did) first');
 	const { openDB } = await import('idb');
-	return openDB('proximity-conversations', 1, {
+	// Namespace DB by user DID so each identity has its own conversation store
+	const dbName = `proximity-conversations-${currentDbDid.slice(-12)}`;
+	return openDB(dbName, 1, {
 		upgrade(db) {
 			if (!db.objectStoreNames.contains('conversations')) {
 				db.createObjectStore('conversations', { keyPath: 'groupId' });
@@ -150,11 +173,22 @@ async function getDb() {
 	});
 }
 
-export async function loadConversations(): Promise<void> {
+export async function loadConversations(did: string): Promise<void> {
+	currentDbDid = did;
 	try {
 		const db = await getDb();
 		const all = await db.getAll('conversations');
+		// Migrate: existing DMs with messages should have dmAccepted = true
+		// (conversations from before this field was added)
+		let migrated = false;
+		for (const c of all) {
+			if (!c.isGroup && c.dmAccepted === undefined && c.messages.length > 0) {
+				c.dmAccepted = true;
+				migrated = true;
+			}
+		}
 		conversationsStore.set(all);
+		if (migrated) persistConversations(all);
 	} catch {
 		// fresh start
 	}
@@ -219,12 +253,14 @@ export function addMessage(groupId: string, msg: DecryptedMessage, updatedKeys?:
 	conversationsStore.update(convos => {
 		const updated = convos.map(c => {
 			if (c.groupId !== groupId) return c;
+			// Dedup: skip if a message with this ID already exists
+			if (c.messages.some(m => m.id === msg.id)) return c;
 			return {
 				...c,
 				messages: [...c.messages, msg],
 				lastMessage: msg.text,
 				lastMessageAt: msg.timestamp,
-				unreadCount: msg.isMine ? c.unreadCount : c.unreadCount + 1,
+				unreadCount: msg.isMine || c.muted || msg.senderDid === 'system' ? c.unreadCount : c.unreadCount + 1,
 				keys: updatedKeys ? serializeKeys(updatedKeys) : c.keys,
 			};
 		});
@@ -250,26 +286,34 @@ export function updateConversationKeys(groupId: string, keys: ConversationKeys):
 /**
  * Update cached member list for a group and return join/leave diffs.
  */
-export function diffGroupMembers(groupId: string, currentMembers: Array<{ did: string; displayName: string }>): { joined: string[]; left: string[] } {
+export function diffGroupMembers(groupId: string, currentMembers: Array<{ did: string; displayName: string }>): { joined: string[]; left: string[]; getName: (did: string) => string } {
 	const convos = get(conversationsStore);
 	const convo = convos.find(c => c.groupId === groupId);
 	const knownDids = convo?.knownMemberDids ?? [];
+	const knownNames = convo?.knownMemberNames ?? {};
 	const currentDids = currentMembers.map(m => m.did);
 
 	const joined = currentDids.filter(d => !knownDids.includes(d));
 	const left = knownDids.filter(d => !currentDids.includes(d));
 
-	// Update the cached member list
+	// Build name lookup from both old cached names and current members
+	const nameMap: Record<string, string> = { ...knownNames };
+	for (const m of currentMembers) {
+		nameMap[m.did] = m.displayName;
+	}
+	const getName = (did: string) => nameMap[did] ?? did.slice(-8);
+
+	// Update the cached member list and names
 	conversationsStore.update(cs => {
 		const updated = cs.map(c => {
 			if (c.groupId !== groupId) return c;
-			return { ...c, knownMemberDids: currentDids };
+			return { ...c, knownMemberDids: currentDids, knownMemberNames: nameMap };
 		});
 		persistConversations(updated);
 		return updated;
 	});
 
-	return { joined, left };
+	return { joined, left, getName };
 }
 
 /**
@@ -291,6 +335,20 @@ export function markRead(groupId: string): void {
  */
 export function getConversation(groupId: string): Conversation | undefined {
 	return get(conversationsStore).find(c => c.groupId === groupId);
+}
+
+/**
+ * Mark a DM conversation as accepted (invitation accepted or auto-accepted).
+ */
+export function markDmAccepted(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, dmAccepted: true };
+		});
+		persistConversations(updated);
+		return updated;
+	});
 }
 
 /**
@@ -323,7 +381,36 @@ export function unmarkConversationLeft(groupId: string): void {
 }
 
 /**
+ * Mark a DM conversation as peer-left (the other person left).
+ */
+export function markConversationPeerLeft(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, peerLeft: true };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Unmark peer-left on a DM conversation (e.g. after reconnection accepted).
+ */
+export function unmarkConversationPeerLeft(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, peerLeft: false };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
  * Update group encryption keys for a conversation.
+ * @deprecated Use updateSenderKeys for new Sender Keys model.
  */
 export function updateGroupConversationKeys(groupId: string, groupKeysMap: Record<number, string>, epoch: number): void {
 	conversationsStore.update(convos => {
@@ -333,6 +420,81 @@ export function updateGroupConversationKeys(groupId: string, groupKeysMap: Recor
 				...c,
 				groupKeys: { ...(c.groupKeys ?? {}), ...groupKeysMap },
 				groupKeyEpoch: epoch,
+			};
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Update sender keys for a group conversation (Signal-style Sender Keys model).
+ * Merges new sender keys with existing ones.
+ */
+export function updateSenderKeys(groupId: string, newKeys: Record<string, string>, mySenderKey?: string, myEpoch?: number): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return {
+				...c,
+				senderKeys: { ...(c.senderKeys ?? {}), ...newKeys },
+				...(mySenderKey !== undefined ? { mySenderKey } : {}),
+				...(myEpoch !== undefined ? { mySenderKeyEpoch: myEpoch } : {}),
+			};
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Set the group delivery token for a group conversation.
+ */
+export function setGroupDeliveryToken(groupId: string, token: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, groupDeliveryToken: token };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Update sealed sender delivery tokens for a DM conversation.
+ */
+export function setDeliveryTokens(groupId: string, myToken?: string, peerToken?: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			const newMyToken = myToken ?? c.myDeliveryToken;
+			const newPeerToken = peerToken ?? c.peerDeliveryToken;
+			return {
+				...c,
+				myDeliveryToken: newMyToken,
+				peerDeliveryToken: newPeerToken,
+				sealedSenderEnabled: !!(newMyToken && newPeerToken),
+			};
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Reset sealed sender state for a conversation (e.g. when sealed send fails).
+ * Clears the stale peer token so the next message goes through the unsealed path,
+ * which re-triggers token exchange.
+ */
+export function resetSealedSender(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return {
+				...c,
+				peerDeliveryToken: undefined,
+				sealedSenderEnabled: false,
 			};
 		});
 		persistConversations(updated);
@@ -361,6 +523,34 @@ export function markMediaViewed(groupId: string, messageId: string): void {
 }
 
 /**
+ * Mute a conversation — suppresses unread count and notifications.
+ */
+export function muteConversation(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, muted: true, unreadCount: 0 };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
+ * Unmute a conversation.
+ */
+export function unmuteConversation(groupId: string): void {
+	conversationsStore.update(convos => {
+		const updated = convos.map(c => {
+			if (c.groupId !== groupId) return c;
+			return { ...c, muted: false };
+		});
+		persistConversations(updated);
+		return updated;
+	});
+}
+
+/**
  * Remove a single conversation from memory and IndexedDB.
  */
 export async function removeConversation(groupId: string): Promise<void> {
@@ -380,11 +570,14 @@ export async function removeConversation(groupId: string): Promise<void> {
 export async function clearAllConversations(): Promise<void> {
 	conversationsStore.set([]);
 	try {
-		const db = await getDb();
-		const tx = db.transaction('conversations', 'readwrite');
-		await tx.store.clear();
-		await tx.done;
+		if (currentDbDid) {
+			const db = await getDb();
+			const tx = db.transaction('conversations', 'readwrite');
+			await tx.store.clear();
+			await tx.done;
+		}
 	} catch {
 		// non-fatal
 	}
+	currentDbDid = null;
 }

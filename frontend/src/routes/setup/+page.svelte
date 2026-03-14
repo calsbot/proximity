@@ -32,11 +32,22 @@
 		error = '';
 
 		try {
-			// Guard: don't overwrite an existing identity (e.g. created in another tab)
+			// If identity already exists in storage (e.g. server DB wiped but keys remain),
+			// re-register with the entered display name instead of generating new keys
 			const existing = await loadIdentityFromStorage();
 			if (existing) {
+				await register(
+					existing.did,
+					displayName.trim(),
+					encodeBase64(existing.publicKey),
+					encodeBase64(existing.boxPublicKey)
+				);
 				cacheIdentityInSession(existing);
 				identityStore.set({ identity: existing, loading: false, error: null });
+				broadcastIdentityChange();
+				if (wantsUpdates && email.trim()) {
+					subscribeNewsletter(email.trim(), displayName.trim()).catch(() => {});
+				}
 				const params = new URLSearchParams(window.location.search);
 				const redirect = params.get('return') ?? params.get('redirect');
 				goto(redirect?.startsWith('/') ? redirect : '/grid');
@@ -107,7 +118,7 @@
 
 <div class="page-container">
 	<div class="page-header">
-		<span class="page-title">get started</span>
+		<span class="page-title">meetmarket.io</span>
 	</div>
 	<div class="page-content">
 		<p>pick a display&nbsp;name</p>
@@ -144,11 +155,15 @@
 		</div>
 
 		<button class="expand-toggle" onclick={() => showDataInfo = !showDataInfo}>
-			{showDataInfo ? '− ' : '+ '}how your data is&nbsp;used
+			{showDataInfo ? '− ' : '+ '}how your data is (not)&nbsp;used
 		</button>
 		{#if showDataInfo}
 			<div class="data-info">
-				<p class="text-caption">your photos and messages are end-to-end encrypted [XSalsa20-Poly1305 + X25519 key exchange] — the server only stores ciphertext it can't read. your location is hidden using decoy cells [geohash k-anonymity] so the server can't tell where you actually&nbsp;are.</p>
+				<p class="text-caption">DMs are encrypted end-to-end using a double ratchet protocol (X25519 + XSalsa20-Poly1305). Every message generates a fresh key, so compromising one message doesn't expose any others. Except for the first message, the server delivers messages without knowing who sent them (sealed&nbsp;sender).</p>
+				<p class="text-caption">Group messages are encrypted with sender keys (nacl.secretbox) — only group members hold the keys to decrypt. The server relays ciphertext it can't&nbsp;read.</p>
+				<p class="text-caption">Photos are encrypted on your device before upload. The server stores an opaque blob it can never&nbsp;decrypt.</p>
+				<p class="text-caption">Profiles (bio, age, tags) are encrypted per-user. Usernames are currently visible to the server for nearby&nbsp;discovery.</p>
+				<p class="text-caption">Location is never sent to the server. Your device mixes your real position with decoy positions (geohash k-anonymity), so the server processes multiple possible locations and can't distinguish which one is&nbsp;yours.</p>
 			</div>
 		{/if}
 
@@ -180,9 +195,31 @@
 		gap: 8px;
 	}
 	.checkbox-row input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		accent-color: var(--white);
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
+		border: 1.5px solid var(--text-muted);
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+		position: relative;
+	}
+	.checkbox-row input[type="checkbox"]:checked {
+		background: var(--white);
+		border-color: var(--white);
+	}
+	.checkbox-row input[type="checkbox"]:checked::after {
+		content: '✓';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		font-size: 13px;
+		color: #000;
+		line-height: 1;
 	}
 	.checkbox-row span {
 		font-size: 14px;

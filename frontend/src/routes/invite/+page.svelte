@@ -167,8 +167,6 @@
 				{/if}
 			</div>
 		</div>
-
-		<p class="text-caption footer">invitation expires after one&nbsp;use.</p>
 	{/if}
 </div>
 
@@ -215,15 +213,34 @@
 		gap: 8px;
 	}
 	.checkbox-row input[type="checkbox"] {
-		width: 16px;
-		height: 16px;
-		accent-color: var(--white);
+		-webkit-appearance: none;
+		appearance: none;
+		width: 18px;
+		height: 18px;
+		min-width: 18px;
+		min-height: 18px;
+		border: 1.5px solid var(--text-muted);
+		border-radius: 0;
+		background: transparent;
+		cursor: pointer;
+		position: relative;
+	}
+	.checkbox-row input[type="checkbox"]:checked {
+		background: var(--white);
+		border-color: var(--white);
+	}
+	.checkbox-row input[type="checkbox"]:checked::after {
+		content: '\2713';
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		font-size: 13px;
+		color: #000;
+		line-height: 1;
 	}
 	.checkbox-row span {
 		font-size: 14px;
 		color: var(--text-muted);
-	}
-	.footer {
-		margin-top: 16px;
 	}
 </style>

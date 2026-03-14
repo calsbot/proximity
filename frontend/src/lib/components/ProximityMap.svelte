@@ -38,9 +38,10 @@
 		userLon: number;
 		activeFilter: string;
 		groups: GroupInfo[];
+		onViewportChange?: (bounds: { north: number; south: number; east: number; west: number }) => void;
 	}
 
-	let { profiles, userLat, userLon, activeFilter, groups }: Props = $props();
+	let { profiles, userLat, userLon, activeFilter, groups, onViewportChange }: Props = $props();
 
 	let mapContainer: HTMLDivElement | undefined = $state();
 	let map: L.Map | undefined;
@@ -69,9 +70,9 @@
 	}
 
 	function presenceColor(p: Presence): string {
-		if (p === 'active') return '#44ff44';
-		if (p === 'idle') return '#ffcc00';
-		return '#555';
+		if (p === 'active') return '#5c8a56';
+		if (p === 'idle') return '#c49a3a';
+		return '#888';
 	}
 
 	function presenceOpacity(p: Presence): number {
@@ -231,14 +232,25 @@
 	}
 
 	/**
-	 * Build a divIcon that looks like a presence-colored circle dot.
+	 * Build a divIcon showing the user's profile photo or a name rectangle.
 	 */
-	function makeDotIcon(color: string, opacity: number): L.DivIcon {
+	function makeProfileIcon(profile: MapProfile, color: string, opacity: number): L.DivIcon {
+		const url = avatarUrl(profile);
+		const w = 54;
+		const h = 54;
+		let html: string;
+		if (url) {
+			html = `<div style="width:${w}px;height:${h}px;overflow:hidden;border:1px solid #fff;background:#1a1a1a;display:flex;align-items:center;"><img src="${url}" alt="" style="width:${w}px;display:block;" /></div>`;
+		} else {
+			html = `<div style="width:${w}px;height:${h}px;border:1px solid #fff;background:#1a1a1a;display:flex;align-items:center;justify-content:center;box-sizing:border-box;">
+				<span style="font-size:18px;color:#aaa;font-family:-apple-system,BlinkMacSystemFont,sans-serif;font-weight:300;">${profile.displayName.charAt(0).toUpperCase()}</span>
+			</div>`;
+		}
 		return L.divIcon({
-			className: 'map-dot-wrapper',
-			html: `<div class="map-dot" style="background:${color}; opacity:${opacity}; border-color:${color};"></div>`,
-			iconSize: [12, 12],
-			iconAnchor: [6, 6],
+			className: 'map-avatar-wrapper',
+			html,
+			iconSize: [w, h],
+			iconAnchor: [w / 2, h / 2],
 		});
 	}
 
@@ -327,7 +339,7 @@
 
 			const bounds = geohashDecode(profile.geohashCell);
 			const [jx, jy] = didToJitter(profile.did);
-			const margin = 0.15;
+			const margin = 0.05;
 			const lat = bounds.lat.min + (margin + jy * (1 - 2 * margin)) * (bounds.lat.max - bounds.lat.min);
 			const lon = bounds.lon.min + (margin + jx * (1 - 2 * margin)) * (bounds.lon.max - bounds.lon.min);
 
@@ -335,27 +347,9 @@
 			const color = presenceColor(presence);
 			const opacity = presenceOpacity(presence);
 
-			// Uncertainty circle (separate layer, not clustered)
-			const uncertaintyM = geohashUncertaintyRadius(profile.geohashCell);
-			const circle = L.circle([lat, lon], {
-				radius: uncertaintyM,
-				fillColor: color,
-				fillOpacity: 0.06,
-				stroke: false,
-				interactive: false,
-			}).addTo(uncertaintyLayer);
-
-			// Profile dot marker (using divIcon so it works with MarkerClusterGroup)
+			// Profile marker with photo or name rectangle
 			const dot = L.marker([lat, lon], {
-				icon: makeDotIcon(color, opacity),
-			});
-
-			// Always bind permanent tooltip — visibility controlled by updateTooltips()
-			dot.bindTooltip(profile.displayName, {
-				permanent: true,
-				direction: 'top',
-				offset: [0, -20],
-				className: 'map-label',
+				icon: makeProfileIcon(profile, color, opacity),
 			});
 
 			// Popup with full profile card (works at any zoom)
@@ -364,6 +358,14 @@
 				maxWidth: 260,
 				minWidth: 200,
 				closeButton: false,
+			});
+
+			dot.on('click', () => {
+				dot.setZIndexOffset(1000);
+			});
+
+			dot.on('popupclose', () => {
+				dot.setZIndexOffset(0);
 			});
 
 			dot.on('popupopen', () => {
@@ -376,7 +378,7 @@
 			});
 
 			clusterGroup.addLayer(dot);
-			profileMarkers.push({ marker: dot, circle, lat, lon });
+			profileMarkers.push({ marker: dot, circle: null as any, lat, lon });
 		}
 
 		// Apply collision avoidance + zoom-based visibility
@@ -423,8 +425,8 @@
 		clusterGroup = L.markerClusterGroup({
 			zoomToBoundsOnClick: true,
 			showCoverageOnHover: false,
-			disableClusteringAtZoom: 16,
-			maxClusterRadius: 60,
+			disableClusteringAtZoom: 15,
+			maxClusterRadius: 80,
 			spiderfyOnMaxZoom: true,
 			iconCreateFunction: (cluster: L.MarkerCluster) => {
 				const count = cluster.getChildCount();
@@ -446,31 +448,21 @@
 		// Re-run tooltip logic when clusters animate
 		clusterGroup.on('animationend', () => { if (mounted) updateTooltips(); });
 
-		// User marker — sits at default z-index so clusters render on top when zoomed out.
-		// When zoomed past clustering threshold (>= 14), clusters dissolve and this is visible.
-		userMarker = L.circleMarker([userLat, userLon], {
-			radius: 7,
-			fillColor: 'transparent',
-			fillOpacity: 0,
-			stroke: true,
-			color: '#44ff44',
-			weight: 2,
-			opacity: 1,
-		}).bindTooltip('you', {
-			permanent: true,
-			direction: 'top',
-			offset: [0, -12],
-			className: 'map-label map-label-you',
-		}).addTo(map);
-
-		L.circleMarker([userLat, userLon], {
-			radius: 2,
-			fillColor: '#44ff44',
-			fillOpacity: 1,
-			stroke: false,
-		}).addTo(map);
+		// No user marker — map centers on user location
 
 		map.on('zoomend', () => { if (mounted) updateTooltips(); });
+
+		// Notify parent when viewport changes (pan/zoom) so it can load more profiles
+		map.on('moveend', () => {
+			if (!mounted || !map || !onViewportChange) return;
+			const b = map.getBounds();
+			onViewportChange({
+				north: b.getNorth(),
+				south: b.getSouth(),
+				east: b.getEast(),
+				west: b.getWest(),
+			});
+		});
 
 		mounted = true;
 		rebuildMarkers();
@@ -610,17 +602,17 @@
 		line-height: 1.4 !important;
 	}
 
-	/* ========== Dot markers ========== */
+	/* ========== Avatar markers ========== */
 
-	:global(.map-dot-wrapper) {
+	:global(.map-avatar-wrapper) {
 		background: transparent !important;
 		border: none !important;
+		padding: 0 !important;
+		overflow: hidden !important;
 	}
-	:global(.map-dot) {
-		width: 12px;
-		height: 12px;
-		border-radius: 50%;
-		border: 1.5px solid;
+	:global(.leaflet-div-icon) {
+		background: transparent !important;
+		border: none !important;
 	}
 
 	/* ========== Name labels ========== */
@@ -629,7 +621,7 @@
 		background: transparent !important;
 		border: none !important;
 		box-shadow: none !important;
-		color: #888 !important;
+		color: #aaa !important;
 		font-family: -apple-system, BlinkMacSystemFont, sans-serif !important;
 		font-size: 10px !important;
 		padding: 0 !important;
@@ -639,7 +631,7 @@
 		display: none !important;
 	}
 	:global(.map-label-you) {
-		color: #44ff44 !important;
+		color: #ffffff !important;
 		font-size: 9px !important;
 		opacity: 0.8;
 	}
@@ -669,14 +661,14 @@
 		justify-content: center;
 		background: rgba(10, 10, 10, 0.92);
 		border-radius: 50%;
-		border: 1px solid rgba(68, 255, 68, 0.3);
+		border: 1px solid rgba(255, 255, 255, 0.3);
 	}
 
 	:global(.cluster-ring) {
 		position: absolute;
 		inset: 0;
 		border-radius: 50%;
-		border: 1px solid rgba(68, 255, 68, 0.3);
+		border: 1px solid rgba(255, 255, 255, 0.3);
 		animation: radar-ping 3s ease-out infinite;
 		pointer-events: none;
 	}
@@ -693,7 +685,7 @@
 		font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 		font-size: 12px;
 		font-weight: 500;
-		color: rgba(68, 255, 68, 0.8);
+		color: rgba(255, 255, 255, 0.8);
 		letter-spacing: -0.3px;
 	}
 

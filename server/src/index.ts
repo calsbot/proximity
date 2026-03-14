@@ -8,9 +8,11 @@ import { groupRoutes } from './routes/groups';
 import { moderationRoutes } from './routes/moderation';
 import { mediaRoutes } from './routes/media';
 import { newsletterRoutes } from './routes/newsletter';
+import { invitationRoutes } from './routes/invitations';
+import { pushRoutes, sendPushNotification } from './routes/push';
 import { db } from './db';
-import { profiles, groupMembers, groups, media } from './db/schema';
-import { eq, and, lte } from 'drizzle-orm';
+import { profiles, groupMembers, groups, media, deliveryTokens, sealedMessages, groupDeliveryTokens, pushSubscriptions } from './db/schema';
+import { eq, and, lte, or } from 'drizzle-orm';
 
 const app = new Hono();
 
@@ -41,6 +43,8 @@ app.route('/groups', groupRoutes);
 app.route('/moderation', moderationRoutes);
 app.route('/media', mediaRoutes);
 app.route('/newsletter', newsletterRoutes);
+app.route('/invitations', invitationRoutes);
+app.route('/push', pushRoutes);
 
 // --- Serve static frontend in production ---
 import { existsSync } from 'fs';
@@ -58,7 +62,7 @@ if (isProduction) {
 		// Skip API routes
 		if (urlPath.startsWith('/auth') || urlPath.startsWith('/profiles') || urlPath.startsWith('/messages') ||
 			urlPath.startsWith('/key-packages') || urlPath.startsWith('/groups') || urlPath.startsWith('/moderation') ||
-			urlPath.startsWith('/media') || urlPath.startsWith('/newsletter')) {
+			urlPath.startsWith('/media') || urlPath.startsWith('/newsletter') || urlPath.startsWith('/invitations')) {
 			return c.notFound();
 		}
 
@@ -124,7 +128,7 @@ function initDb() {
 		);
 		CREATE TABLE IF NOT EXISTS media (
 			id TEXT PRIMARY KEY,
-			uploader_did TEXT NOT NULL REFERENCES profiles(did),
+			uploader_did TEXT,
 			encrypted_blob BLOB,
 			media_key_wrapped TEXT,
 			mime_type TEXT NOT NULL,
@@ -188,8 +192,12 @@ function initDb() {
 	// Double Ratchet header columns
 	try { sqliteDb.exec('ALTER TABLE encrypted_messages ADD COLUMN dh_public_key TEXT'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE encrypted_messages ADD COLUMN previous_counter INTEGER'); } catch {}
-	// Invite link hash on groups
+	// Invite link columns on groups
 	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN invite_link_hash TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN invite_link_max_uses INTEGER'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN invite_link_used_count INTEGER DEFAULT 0'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN invite_link_expires_at INTEGER'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN description TEXT DEFAULT \'\''); } catch {}
 
 	// Group encryption keys table
 	sqliteDb.exec(`
@@ -206,9 +214,40 @@ function initDb() {
 		CREATE INDEX IF NOT EXISTS idx_group_keys_group_member ON group_keys(group_id, member_did);
 	`);
 
+	// Sealed sender tables
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS delivery_tokens (
+			did TEXT PRIMARY KEY,
+			token_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE TABLE IF NOT EXISTS sealed_messages (
+			id TEXT PRIMARY KEY,
+			recipient_did TEXT NOT NULL,
+			delivery_token_hash TEXT NOT NULL,
+			sealed_payload TEXT NOT NULL,
+			ephemeral_public_key TEXT NOT NULL,
+			nonce TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_sealed_messages_recipient ON sealed_messages(recipient_did, created_at);
+		CREATE TABLE IF NOT EXISTS group_delivery_tokens (
+			group_id TEXT PRIMARY KEY,
+			token_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+	`);
+
+	// Delivery tokens: add previous_token_hash for token rotation resilience
+	try { sqliteDb.exec('ALTER TABLE delivery_tokens ADD COLUMN previous_token_hash TEXT'); } catch {}
+
 	// Media view-once support
 	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN view_once INTEGER DEFAULT 0'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN expires_at INTEGER'); } catch {}
+
+	// Group view-once: track which group a media belongs to + who has viewed it
+	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN group_id TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE media ADD COLUMN viewed_by TEXT'); } catch {}
 
 	// Profile instagram + link columns
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN instagram TEXT'); } catch {}
@@ -217,6 +256,128 @@ function initDb() {
 	// Encrypted avatar key/nonce columns
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN avatar_key TEXT'); } catch {}
 	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN avatar_nonce TEXT'); } catch {}
+
+	// Profile encryption columns (simplified: key stored on profile row, no distribution)
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN encrypted_fields TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN encrypted_fields_nonce TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN profile_key TEXT'); } catch {}
+	try { sqliteDb.exec('ALTER TABLE profiles ADD COLUMN tags TEXT'); } catch {}
+
+	// DM invitations table
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS dm_invitations (
+			id TEXT PRIMARY KEY,
+			sender_did TEXT NOT NULL REFERENCES profiles(did),
+			recipient_did TEXT NOT NULL REFERENCES profiles(did),
+			group_id TEXT NOT NULL,
+			sender_display_name TEXT NOT NULL,
+			sender_avatar_media_id TEXT,
+			sender_avatar_key TEXT,
+			sender_avatar_nonce TEXT,
+			sender_geohash_cell TEXT,
+			first_message_ciphertext TEXT NOT NULL,
+			first_message_nonce TEXT NOT NULL,
+			first_message_epoch INTEGER NOT NULL,
+			first_message_dh_public_key TEXT,
+			first_message_previous_counter INTEGER,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_dm_invitations_recipient ON dm_invitations(recipient_did, status);
+		CREATE INDEX IF NOT EXISTS idx_dm_invitations_sender ON dm_invitations(sender_did);
+	`);
+
+	// DM leave records table
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS dm_leaves (
+			id TEXT PRIMARY KEY,
+			group_id TEXT NOT NULL,
+			leaver_did TEXT NOT NULL REFERENCES profiles(did),
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_dm_leaves_group ON dm_leaves(group_id);
+	`);
+
+	// Groups description column
+	try { sqliteDb.exec('ALTER TABLE groups ADD COLUMN description TEXT DEFAULT \'\''); } catch {}
+
+	// Community moderation tables
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS flags (
+			id TEXT PRIMARY KEY,
+			flagger_did TEXT NOT NULL REFERENCES profiles(did),
+			flagged_did TEXT NOT NULL REFERENCES profiles(did),
+			category TEXT NOT NULL,
+			signed_blob TEXT NOT NULL,
+			signature TEXT NOT NULL,
+			weight INTEGER NOT NULL DEFAULT 10,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_flags_flagged ON flags(flagged_did, category);
+		CREATE INDEX IF NOT EXISTS idx_flags_flagger ON flags(flagger_did);
+
+		CREATE TABLE IF NOT EXISTS flag_throttles (
+			did TEXT PRIMARY KEY REFERENCES profiles(did),
+			level TEXT NOT NULL DEFAULT 'none',
+			reason TEXT,
+			effective_at INTEGER NOT NULL DEFAULT (unixepoch()),
+			expires_at INTEGER,
+			appealed_at INTEGER
+		);
+
+		CREATE TABLE IF NOT EXISTS csam_hashes (
+			id TEXT PRIMARY KEY,
+			media_id TEXT NOT NULL,
+			perceptual_hash TEXT NOT NULL,
+			match_result TEXT,
+			checked_at INTEGER,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_csam_hashes_media ON csam_hashes(media_id);
+	`);
+
+	// Push notification subscriptions
+	sqliteDb.exec(`
+		CREATE TABLE IF NOT EXISTS push_subscriptions (
+			id TEXT PRIMARY KEY,
+			did TEXT NOT NULL REFERENCES profiles(did),
+			endpoint TEXT NOT NULL,
+			p256dh TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT (unixepoch())
+		);
+		CREATE INDEX IF NOT EXISTS idx_push_subscriptions_did ON push_subscriptions(did);
+	`);
+
+	// Migration: make media.uploader_did nullable (for sealed uploads)
+	// SQLite can't ALTER COLUMN, so recreate the table if it has the NOT NULL constraint
+	try {
+		const colInfo = sqliteDb.prepare("PRAGMA table_info(media)").all() as Array<{ name: string; notnull: number }>;
+		const uploaderCol = colInfo.find((c: any) => c.name === 'uploader_did');
+		if (uploaderCol && uploaderCol.notnull === 1) {
+			sqliteDb.exec('PRAGMA foreign_keys = OFF');
+			sqliteDb.exec(`
+				CREATE TABLE media_new (
+					id TEXT PRIMARY KEY,
+					uploader_did TEXT,
+					encrypted_blob BLOB,
+					media_key_wrapped TEXT,
+					mime_type TEXT NOT NULL,
+					size INTEGER NOT NULL,
+					view_once INTEGER DEFAULT 0,
+					expires_at INTEGER,
+					created_at INTEGER NOT NULL DEFAULT (unixepoch())
+				);
+				INSERT INTO media_new SELECT id, uploader_did, encrypted_blob, media_key_wrapped, mime_type, size, view_once, expires_at, created_at FROM media;
+				DROP TABLE media;
+				ALTER TABLE media_new RENAME TO media;
+			`);
+			sqliteDb.exec('PRAGMA foreign_keys = ON');
+			console.log('[db] Migrated media table: uploader_did now nullable');
+		}
+	} catch (e) {
+		console.error('[db] Media migration error:', e);
+	}
 }
 
 initDb();
@@ -286,14 +447,43 @@ export default {
 					return;
 				}
 
+				// DM messages are now relayed from the REST POST /messages handler
+				// (which includes the DB-assigned id for proper dedup). No WS relay needed here.
 				if (data.type === 'message' && data.recipientDid) {
 					const senderDid = (ws as any).did;
 					if (senderDid) touchLastSeen(senderDid);
+				}
+
+				// Sealed sender message — server intentionally ignores (ws as any).did
+			if (data.type === 'sealed_message' && data.recipientDid && data.deliveryToken) {
+				// Validate delivery token
+				const hasher = new Bun.CryptoHasher('sha256');
+				hasher.update(data.deliveryToken);
+				const tokenHash = hasher.digest('hex');
+				const tokenRow = await db.select().from(deliveryTokens).where(
+					or(eq(deliveryTokens.tokenHash, tokenHash), eq(deliveryTokens.previousTokenHash, tokenHash))
+				).get();
+				if (tokenRow) {
 					const recipient = wsClients.get(data.recipientDid);
 					if (recipient) {
-						recipient.send(JSON.stringify(data));
+						// Relay only sealed fields — no sender identity
+						recipient.send(JSON.stringify({
+							type: 'sealed_message',
+							sealedPayload: data.sealedPayload,
+							ephemeralPublicKey: data.ephemeralPublicKey,
+							nonce: data.nonce,
+						}));
+					} else {
+						// Recipient offline — push notification (can't reveal sender for sealed messages)
+						sendPushNotification(data.recipientDid, {
+							title: 'New message',
+							body: 'You have a new message',
+							tag: 'msg-sealed',
+							data: { url: '/chat' },
+						}).catch(() => {});
 					}
 				}
+			}
 
 				// Relay media_viewed notification to sender
 			if (data.type === 'media_viewed' && data.recipientDid) {
@@ -314,6 +504,33 @@ export default {
 					}
 				}
 			}
+
+			// Sealed group message — server doesn't know senderDid
+			if (data.type === 'sealed_group_message' && data.groupId && data.deliveryToken) {
+				const hasher2 = new Bun.CryptoHasher('sha256');
+				hasher2.update(data.deliveryToken);
+				const gTokenHash = hasher2.digest('hex');
+				const gToken = await db.select().from(groupDeliveryTokens).where(eq(groupDeliveryTokens.tokenHash, gTokenHash)).get();
+				if (gToken) {
+					// Get all group members and relay
+					const members = await db.select().from(groupMembers).where(eq(groupMembers.groupId, data.groupId)).all();
+					for (const m of members) {
+						const client = wsClients.get(m.did);
+						if (client && client !== ws) {
+							client.send(JSON.stringify({
+								type: 'group_message',
+								groupId: data.groupId,
+								senderDid: 'sealed',
+								ciphertext: data.ciphertext,
+								nonce: data.nonce,
+								epoch: data.epoch,
+							}));
+						}
+					}
+				}
+			}
+
+
 
 			if (data.type === 'group_message' && data.groupId) {
 					// Verify sender is still a member before relaying
@@ -343,7 +560,12 @@ export default {
 		},
 		close(ws: any) {
 			if ((ws as any).did) {
-				wsClients.delete((ws as any).did);
+				// Only remove if this is still the active connection for this DID.
+				// Prevents race: old WS close fires AFTER new reconnection registers,
+				// which would delete the new entry and break all real-time delivery.
+				if (wsClients.get((ws as any).did) === ws) {
+					wsClients.delete((ws as any).did);
+				}
 			}
 		}
 	}

@@ -316,7 +316,7 @@ async function skipMessageKeys(
 ): Promise<ConversationKeys> {
 	const MAX_SKIP = 100;
 	if (toCounter - fromCounter > MAX_SKIP) {
-		throw new Error(`Too many skipped messages: ${toCounter - fromCounter}`);
+		throw new Error(`Too many skipped messages: ${toCounter - fromCounter} (stale session data)`);
 	}
 
 	let chainKey = keys.recvChainKey;

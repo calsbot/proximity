@@ -25,6 +25,8 @@
 	let canvas = $state<HTMLCanvasElement | undefined>();
 
 	let isVideo = $derived(mimeType.startsWith('video/'));
+	let countdown = $state(5);
+	let autoCloseTimer: ReturnType<typeof setInterval> | null = null;
 
 	// Block screenshots via Visibility API — blank the viewer when app is backgrounded
 	function handleVisibility() {
@@ -36,7 +38,10 @@
 
 	onMount(() => {
 		document.addEventListener('visibilitychange', handleVisibility);
-		return () => document.removeEventListener('visibilitychange', handleVisibility);
+		return () => {
+			document.removeEventListener('visibilitychange', handleVisibility);
+			if (autoCloseTimer) clearInterval(autoCloseTimer);
+		};
 	});
 
 	$effect(() => {
@@ -88,6 +93,17 @@
 				error = e instanceof Error ? e.message : 'failed to load media';
 			} finally {
 				loading = false;
+				// Images: 10-second countdown. Videos: close when playback ends.
+				if (!error && !isVideo) {
+					countdown = 10;
+					autoCloseTimer = setInterval(() => {
+						countdown--;
+						if (countdown <= 0) {
+							if (autoCloseTimer) clearInterval(autoCloseTimer);
+							onclose();
+						}
+					}, 1000);
+				}
 			}
 		})();
 
@@ -124,6 +140,7 @@
 				class="viewer-media"
 				oncontextmenu={blockEvent}
 				ondragstart={blockEvent}
+				onended={onclose}
 			>
 				<track kind="captions" />
 			</video>
@@ -136,7 +153,7 @@
 			></canvas>
 		{/if}
 
-		<button class="viewer-close" onclick={onclose}>close</button>
+		<button class="viewer-close" onclick={onclose}>{loading ? 'close' : isVideo ? 'close' : `close (${countdown}s)`}</button>
 	</div>
 </div>
 

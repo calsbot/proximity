@@ -120,6 +120,87 @@ groupRoutes.get('/', async (c) => {
 });
 
 /**
+ * GET /groups/my-admin-join-requests
+ * List ALL pending join requests across all groups where the caller is admin.
+ */
+groupRoutes.get('/my-admin-join-requests', async (c) => {
+	const did = c.req.query('did');
+	if (!did) return c.json({ error: 'did required' }, 400);
+
+	// Find all groups where user is admin
+	const adminMemberships = await db.select({ groupId: groupMembers.groupId })
+		.from(groupMembers)
+		.where(and(eq(groupMembers.did, did), eq(groupMembers.role, 'admin')))
+		.all();
+
+	if (adminMemberships.length === 0) return c.json([]);
+
+	const result = [];
+	for (const membership of adminMemberships) {
+		const requests = await db.select()
+			.from(groupInvites)
+			.where(and(
+				eq(groupInvites.groupId, membership.groupId),
+				eq(groupInvites.status, 'requested')
+			))
+			.all();
+
+		if (requests.length === 0) continue;
+
+		// Get group name
+		const group = await db.select({ name: groups.name })
+			.from(groups).where(eq(groups.id, membership.groupId)).get();
+
+		for (const req of requests) {
+			const profile = await db.select({ displayName: profiles.displayName })
+				.from(profiles).where(eq(profiles.did, req.inviteeDid)).get();
+			result.push({
+				id: req.id,
+				groupId: membership.groupId,
+				groupName: group?.name ?? 'unknown',
+				requesterDid: req.inviteeDid,
+				requesterName: profile?.displayName ?? 'unknown',
+				createdAt: req.createdAt,
+			});
+		}
+	}
+
+	return c.json(result);
+});
+
+/**
+ * GET /groups/my-pending-requests
+ * List the caller's own pending join requests (so they can see status in the requests tab).
+ */
+groupRoutes.get('/my-pending-requests', async (c) => {
+	const did = c.req.query('did');
+	if (!did) return c.json({ error: 'did required' }, 400);
+
+	const requests = await db.select()
+		.from(groupInvites)
+		.where(and(
+			eq(groupInvites.inviteeDid, did),
+			eq(groupInvites.status, 'requested')
+		))
+		.all();
+
+	const result = [];
+	for (const req of requests) {
+		const group = await db.select({ name: groups.name })
+			.from(groups).where(eq(groups.id, req.groupId)).get();
+		result.push({
+			id: req.id,
+			groupId: req.groupId,
+			groupName: group?.name ?? 'unknown',
+			status: req.status,
+			createdAt: req.createdAt,
+		});
+	}
+
+	return c.json(result);
+});
+
+/**
  * GET /groups/:id
  * Get group details + members.
  */
@@ -172,6 +253,11 @@ groupRoutes.post('/:id/invite', async (c) => {
 		return c.json({ error: 'Not a group member' }, 403);
 	}
 
+	// Only admins can invite
+	if (isMember.role !== 'admin') {
+		return c.json({ error: 'Only admins can invite members' }, 403);
+	}
+
 	// Check if already a member
 	const alreadyMember = await db.select()
 		.from(groupMembers)
@@ -191,6 +277,19 @@ groupRoutes.post('/:id/invite', async (c) => {
 		status: 'pending',
 	});
 
+	// Notify the invitee in real-time so they see the invite without refreshing
+	const ws = wsClients.get(inviteeDid);
+	if (ws) {
+		const group = await db.select().from(groups).where(eq(groups.id, groupId)).get();
+		ws.send(JSON.stringify({
+			type: 'group_invite',
+			groupId,
+			inviteId,
+			groupName: group?.name ?? '',
+			inviterDid,
+		}));
+	}
+
 	return c.json({ ok: true, inviteId });
 });
 
@@ -207,11 +306,19 @@ groupRoutes.get('/invites/pending', async (c) => {
 		.where(and(eq(groupInvites.inviteeDid, did), eq(groupInvites.status, 'pending')))
 		.all();
 
-	// Enrich with group names
+	// Enrich with group names, description, member count, and inviter display name
 	const result = [];
 	for (const inv of invites) {
-		const group = await db.select({ name: groups.name }).from(groups).where(eq(groups.id, inv.groupId)).get();
-		result.push({ ...inv, groupName: group?.name ?? 'unknown' });
+		const group = await db.select({ name: groups.name, description: groups.description }).from(groups).where(eq(groups.id, inv.groupId)).get();
+		const members = await db.select({ did: groupMembers.did }).from(groupMembers).where(eq(groupMembers.groupId, inv.groupId)).all();
+		const inviter = await db.select({ displayName: profiles.displayName }).from(profiles).where(eq(profiles.did, inv.inviterDid)).get();
+		result.push({
+			...inv,
+			groupName: group?.name ?? 'unknown',
+			groupDescription: group?.description ?? '',
+			memberCount: members.length,
+			inviterDisplayName: inviter?.displayName ?? inv.inviterDid.slice(-8),
+		});
 	}
 
 	return c.json(result);
@@ -240,6 +347,20 @@ groupRoutes.post('/invites/:id/respond', async (c) => {
 		});
 		const name = await getDisplayName(invite.inviteeDid);
 		await broadcastSystemMessage(invite.groupId, `${name} joined the group`);
+
+		// Notify all existing members that someone joined — any member with the key can redistribute
+		const allMembers = await db.select({ did: groupMembers.did })
+			.from(groupMembers)
+			.where(eq(groupMembers.groupId, invite.groupId))
+			.all();
+		for (const m of allMembers) {
+			if (m.did === invite.inviteeDid) continue;
+			const ws = wsClients.get(m.did);
+			if (ws) {
+				ws.send(JSON.stringify({ type: 'member_joined', groupId: invite.groupId, memberDid: invite.inviteeDid }));
+			}
+		}
+
 		return c.json({ ok: true, groupId: invite.groupId });
 	} else {
 		await db.update(groupInvites).set({ status: 'declined' }).where(eq(groupInvites.id, inviteId));
@@ -249,16 +370,113 @@ groupRoutes.post('/invites/:id/respond', async (c) => {
 
 /**
  * POST /groups/:id/leave
- * Leave a group.
+ * Leave a group. Admins must transfer admin role first (or be the last member).
  */
 groupRoutes.post('/:id/leave', async (c) => {
 	const groupId = c.req.param('id');
 	const { did } = await c.req.json<{ did: string }>();
 
+	// Check if the user is admin
+	const member = await db.select()
+		.from(groupMembers)
+		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)))
+		.get();
+
+	if (member?.role === 'admin') {
+		// Count remaining members (excluding self)
+		const allMembers = db.select({ did: groupMembers.did })
+			.from(groupMembers)
+			.where(eq(groupMembers.groupId, groupId))
+			.all();
+		const others = allMembers.filter(m => m.did !== did);
+
+		if (others.length > 0) {
+			// Check if there's another admin
+			const allAdmins = db.select()
+				.from(groupMembers)
+				.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.role, 'admin')))
+				.all();
+			const otherAdmins = allAdmins.filter(m => m.did !== did);
+
+			if (otherAdmins.length === 0) {
+				return c.json({ error: 'Transfer admin to another member before leaving' }, 400);
+			}
+		}
+		// Last member or another admin exists — ok to leave
+	}
+
 	const name = await getDisplayName(did);
 	await db.delete(groupMembers)
 		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)));
+
+	// Notify remaining members so their member list updates
+	const remaining = await db.select({ did: groupMembers.did })
+		.from(groupMembers)
+		.where(eq(groupMembers.groupId, groupId))
+		.all();
+	for (const m of remaining) {
+		const ws = wsClients.get(m.did);
+		if (ws) {
+			ws.send(JSON.stringify({ type: 'member_removed', groupId, targetDid: did }));
+		}
+	}
 	await broadcastSystemMessage(groupId, `${name} left the group`);
+
+	return c.json({ ok: true });
+});
+
+/**
+ * POST /groups/:id/transfer-admin
+ * Transfer admin role to another member.
+ */
+groupRoutes.post('/:id/transfer-admin', async (c) => {
+	const groupId = c.req.param('id');
+	const { did, targetDid } = await c.req.json<{ did: string; targetDid: string }>();
+
+	// Verify caller is admin
+	const caller = await db.select()
+		.from(groupMembers)
+		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)))
+		.get();
+	if (!caller || caller.role !== 'admin') {
+		return c.json({ error: 'Not authorized' }, 403);
+	}
+
+	// Verify target is a member
+	const target = await db.select()
+		.from(groupMembers)
+		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, targetDid)))
+		.get();
+	if (!target) {
+		return c.json({ error: 'Target is not a member' }, 400);
+	}
+
+	// Promote target to admin
+	await db.update(groupMembers)
+		.set({ role: 'admin' })
+		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, targetDid)));
+
+	// Demote caller to member
+	await db.update(groupMembers)
+		.set({ role: 'member' })
+		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)));
+
+	const targetName = await getDisplayName(targetDid);
+	await broadcastSystemMessage(groupId, `${targetName} is now the group admin`);
+
+	// Notify all members to refresh their member list (roles changed).
+	// Use 'role_changed' — NOT 'member_joined' — to avoid triggering unnecessary
+	// key redistribution which adds latency and 403 errors during leave.
+	const allMembers = await db.select({ did: groupMembers.did })
+		.from(groupMembers)
+		.where(eq(groupMembers.groupId, groupId))
+		.all();
+	for (const m of allMembers) {
+		const ws = wsClients.get(m.did);
+		if (ws) {
+			ws.send(JSON.stringify({ type: 'role_changed', groupId, memberDid: targetDid }));
+		}
+	}
 
 	return c.json({ ok: true });
 });
@@ -319,7 +537,12 @@ groupRoutes.post('/:id/kick', async (c) => {
  */
 groupRoutes.post('/:id/invite-link', async (c) => {
 	const groupId = c.req.param('id');
-	const { did, inviteKeyHash } = await c.req.json<{ did: string; inviteKeyHash: string }>();
+	const { did, inviteKeyHash, maxUses, expiresInHours } = await c.req.json<{
+		did: string;
+		inviteKeyHash: string;
+		maxUses?: number | null;
+		expiresInHours?: number | null;
+	}>();
 
 	// Verify caller is a member
 	const member = await db.select()
@@ -327,9 +550,17 @@ groupRoutes.post('/:id/invite-link', async (c) => {
 		.where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.did, did)))
 		.get();
 	if (!member) return c.json({ error: 'Not a group member' }, 403);
+	if (member.role !== 'admin') return c.json({ error: 'Only admins can create invite links' }, 403);
+
+	const expiresAt = expiresInHours ? new Date(Date.now() + expiresInHours * 60 * 60 * 1000) : null;
 
 	await db.update(groups)
-		.set({ inviteLinkHash: inviteKeyHash })
+		.set({
+			inviteLinkHash: inviteKeyHash,
+			inviteLinkMaxUses: maxUses ?? null,
+			inviteLinkUsedCount: 0,
+			inviteLinkExpiresAt: expiresAt,
+		})
 		.where(eq(groups.id, groupId));
 
 	return c.json({ ok: true });
@@ -346,6 +577,16 @@ groupRoutes.post('/:id/join', async (c) => {
 	const group = await db.select().from(groups).where(eq(groups.id, groupId)).get();
 	if (!group) return c.json({ error: 'Group not found' }, 404);
 	if (!group.inviteLinkHash) return c.json({ error: 'No invite link active' }, 403);
+
+	// Check expiration
+	if (group.inviteLinkExpiresAt && new Date(group.inviteLinkExpiresAt) < new Date()) {
+		return c.json({ error: 'This invite link has expired' }, 403);
+	}
+
+	// Check usage limit
+	if (group.inviteLinkMaxUses && (group.inviteLinkUsedCount ?? 0) >= group.inviteLinkMaxUses) {
+		return c.json({ error: 'This invite link has reached its usage limit' }, 403);
+	}
 
 	// Verify the key
 	const hash = await sha256Hex(inviteKey);
@@ -368,8 +609,26 @@ groupRoutes.post('/:id/join', async (c) => {
 		role: 'member',
 	});
 
+	// Increment usage count
+	await db.update(groups)
+		.set({ inviteLinkUsedCount: (group.inviteLinkUsedCount ?? 0) + 1 })
+		.where(eq(groups.id, groupId));
+
 	const name = await getDisplayName(did);
 	await broadcastSystemMessage(groupId, `${name} joined the group`);
+
+	// Notify all existing members that someone joined — any member with the key can redistribute
+	const allMembers = await db.select({ did: groupMembers.did })
+		.from(groupMembers)
+		.where(eq(groupMembers.groupId, groupId))
+		.all();
+	for (const m of allMembers) {
+		if (m.did === did) continue; // skip the new member themselves
+		const ws = wsClients.get(m.did);
+		if (ws) {
+			ws.send(JSON.stringify({ type: 'member_joined', groupId, memberDid: did }));
+		}
+	}
 
 	return c.json({ ok: true, groupId });
 });
@@ -535,6 +794,19 @@ groupRoutes.post('/:id/join-requests/:requestId/respond', async (c) => {
 
 		const name = await getDisplayName(request.inviteeDid);
 		await broadcastSystemMessage(groupId, `${name} joined the group`);
+
+		// Notify existing members so they redistribute sender keys + update member list
+		const allMembers = await db.select({ did: groupMembers.did })
+			.from(groupMembers)
+			.where(eq(groupMembers.groupId, groupId))
+			.all();
+		for (const m of allMembers) {
+			if (m.did === request.inviteeDid) continue;
+			const mws = wsClients.get(m.did);
+			if (mws) {
+				mws.send(JSON.stringify({ type: 'member_joined', groupId, memberDid: request.inviteeDid }));
+			}
+		}
 
 		return c.json({ ok: true });
 	} else {

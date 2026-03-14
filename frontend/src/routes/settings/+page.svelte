@@ -2,9 +2,10 @@
 	import { onMount } from 'svelte';
 	import { identityStore } from '$lib/stores/identity';
 	import { locationStore, requestLocation } from '$lib/stores/location';
-	import { listBlocks, unblockUser } from '$lib/api';
+	import { listBlocks, unblockUser, getFlagStatus, submitAppeal } from '$lib/api';
 	import { wsStatus } from '$lib/services/websocket';
 	import { loadIdentityFromStorage, downloadIdentityBackup } from '$lib/crypto/identity';
+	import { pushSupported, pushSubscribed, notificationPermission, subscribeToPush, unsubscribeFromPush } from '$lib/services/notifications';
 
 	let identity = $derived($identityStore);
 	let location = $derived($locationStore);
@@ -12,11 +13,21 @@
 
 	let blockedUsers = $state<Array<{ blockedDid: string; createdAt: string }>>([]);
 	let myDid = $derived(identity.identity?.did);
+	let flagLevel = $state<'none' | 'throttled' | 'hidden'>('none');
+	let flagReason = $state<string | undefined>();
+	let hasAppealed = $state(false);
+	let appealSubmitting = $state(false);
 
 	onMount(async () => {
 		if (myDid) {
 			try {
 				blockedUsers = await listBlocks(myDid);
+			} catch {}
+			try {
+				const status = await getFlagStatus(myDid);
+				flagLevel = status.level;
+				flagReason = status.reason;
+				hasAppealed = !!status.appealedAt;
 			} catch {}
 		}
 
@@ -38,6 +49,31 @@
 		} catch {}
 	}
 
+	async function handleAppeal() {
+		if (!myDid || appealSubmitting) return;
+		appealSubmitting = true;
+		try {
+			await submitAppeal(myDid);
+			hasAppealed = true;
+		} catch {}
+		appealSubmitting = false;
+	}
+
+	let notifToggling = $state(false);
+
+	async function togglePush() {
+		if (notifToggling || !myDid) return;
+		notifToggling = true;
+		try {
+			if ($pushSubscribed) {
+				await unsubscribeFromPush(myDid);
+			} else {
+				await subscribeToPush(myDid);
+			}
+		} catch {}
+		notifToggling = false;
+	}
+
 	let backupDownloaded = $state(false);
 
 	async function handleBackup() {
@@ -50,6 +86,7 @@
 			}
 		} catch {}
 	}
+
 </script>
 
 <div class="settings">
@@ -102,6 +139,37 @@
 		</div>
 	</div>
 
+	{#if $pushSupported}
+		<div class="page-container">
+			<div class="page-header">
+				<span class="page-title">notifications</span>
+			</div>
+			<div class="card-body">
+				<div class="row">
+					<span class="label">push notifications</span>
+					<button class="small" onclick={togglePush} disabled={notifToggling || $notificationPermission === 'denied'}>
+						{#if notifToggling}
+							...
+						{:else if $pushSubscribed}
+							enabled — disable
+						{:else if $notificationPermission === 'denied'}
+							blocked by browser
+						{:else}
+							enable
+						{/if}
+					</button>
+				</div>
+				{#if $notificationPermission === 'denied'}
+					<p class="note">notifications are blocked in your browser settings. you'll need to allow them there first.</p>
+				{:else if $pushSubscribed}
+					<p class="note">you'll receive push notifications when you have new messages and the app is closed.</p>
+				{:else}
+					<p class="note">enable to get notified of new messages when the app is in the background.</p>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	<div class="page-container">
 		<div class="page-header">
 			<span class="page-title">location privacy</span>
@@ -126,6 +194,41 @@
 			{/if}
 		</div>
 	</div>
+
+	{#if flagLevel !== 'none'}
+		<div class="page-container">
+			<div class="page-header">
+				<span class="page-title">account status</span>
+			</div>
+			<div class="card-body">
+				<div class="row">
+					<span class="label">status</span>
+					<span class="value">{flagLevel}</span>
+				</div>
+				{#if flagReason}
+					<div class="row">
+						<span class="label">reason</span>
+						<span class="value">{flagReason}</span>
+					</div>
+				{/if}
+				{#if flagLevel === 'throttled'}
+					<p class="note">your messages are limited to 1 per minute due to community reports.</p>
+				{:else}
+					<p class="note">your profile is hidden from discovery due to community reports.</p>
+				{/if}
+				<div class="appeal-row">
+					{#if hasAppealed}
+						<span class="appeal-status">appeal submitted — under review</span>
+					{:else}
+						<button onclick={handleAppeal} disabled={appealSubmitting}>
+							{appealSubmitting ? 'submitting...' : 'submit appeal'}
+						</button>
+						<span class="appeal-note">appeals are reviewed manually. false flags are reversed.</span>
+					{/if}
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if blockedUsers.length > 0}
 		<div class="page-container">
@@ -191,6 +294,23 @@
 	.backup-note {
 		color: var(--text-muted);
 		font-size: 11px;
+		line-height: 1.5;
+	}
+	.appeal-row {
+		margin-top: 12px;
+		padding-top: 12px;
+		border-top: 1px solid var(--border);
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+	}
+	.appeal-status {
+		font-size: 12px;
+		color: var(--text-muted);
+	}
+	.appeal-note {
+		font-size: 11px;
+		color: var(--text-muted);
 		line-height: 1.5;
 	}
 </style>
