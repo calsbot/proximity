@@ -29,6 +29,7 @@
 		const params = new URLSearchParams(hash);
 		groupId = params.get('groupId') ?? '';
 		inviteKey = params.get('key') ?? '';
+		console.log('[invite] Parsed hash — groupId:', groupId, 'inviteKey:', inviteKey?.slice(0, 8), 'myDid:', myDid?.slice(-8) ?? 'null', 'identityLoading:', identityLoading);
 
 		if (!groupId || !inviteKey) {
 			error = 'this link has expired.';
@@ -49,6 +50,7 @@
 	});
 
 	async function handleEnter() {
+		console.log('[invite] handleEnter — myDid:', myDid?.slice(-8) ?? 'null', 'groupId:', groupId, 'inviteKey:', inviteKey?.slice(0, 8));
 		if (myDid) {
 			handleJoin();
 			return;
@@ -56,6 +58,7 @@
 		// Try loading identity from IndexedDB before showing signup
 		try {
 			const existing = await loadIdentityFromStorage();
+			console.log('[invite] IndexedDB fallback:', existing ? existing.did.slice(-8) : 'no identity');
 			if (existing) {
 				cacheIdentityInSession(existing);
 				identityStore.set({ identity: existing, loading: false, error: null });
@@ -65,7 +68,10 @@
 					// Ensure registered on server
 					try {
 						await register(existing.did, existing.did.slice(-8), encodeBase64(existing.publicKey), encodeBase64(existing.boxPublicKey));
-					} catch {}
+						console.log('[invite] Registered on server');
+					} catch (e) {
+						console.log('[invite] Register call:', e);
+					}
 					await joinGroupViaInvite(groupId, existing.did, inviteKey);
 					getOrCreateConversation(groupId, '', groupName, '', null, true);
 					goto(`/chat/${encodeURIComponent(groupId)}`);
@@ -82,7 +88,11 @@
 	async function handleJoin() {
 		const identity = $identityStore.identity;
 		const did = identity?.did;
-		if (!did || !groupId || !inviteKey) return;
+		console.log('[invite] handleJoin — did:', did?.slice(-8) ?? 'null', 'groupId:', groupId, 'inviteKey:', inviteKey?.slice(0, 8));
+		if (!did || !groupId || !inviteKey) {
+			console.log('[invite] handleJoin ABORTED — missing:', !did ? 'did' : '', !groupId ? 'groupId' : '', !inviteKey ? 'inviteKey' : '');
+			return;
+		}
 		joining = true;
 		error = '';
 		try {
@@ -90,12 +100,18 @@
 			if (identity) {
 				try {
 					await register(did, did.slice(-8), encodeBase64(identity.publicKey), encodeBase64(identity.boxPublicKey));
-				} catch {}
+					console.log('[invite] Server registration OK');
+				} catch (e) {
+					console.log('[invite] Register error (may already exist):', e);
+				}
 			}
+			console.log('[invite] Joining group...');
 			await joinGroupViaInvite(groupId, did, inviteKey);
+			console.log('[invite] Joined! Redirecting...');
 			getOrCreateConversation(groupId, '', groupName, '', null, true);
 			goto(`/chat/${encodeURIComponent(groupId)}`);
 		} catch (e) {
+			console.error('[invite] Join failed:', e);
 			error = e instanceof Error ? e.message : 'failed to join.';
 			joining = false;
 		}
