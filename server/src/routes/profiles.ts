@@ -67,8 +67,8 @@ profileRoutes.get('/discover', async (c) => {
 		.from(flagThrottles).where(eq(flagThrottles.level, 'hidden')).all();
 	const hiddenDids = new Set(hiddenProfiles.map(h => h.did));
 
-	// Hide profiles not seen in over 24 hours
-	const staleThreshold = Date.now() - 24 * 60 * 60 * 1000;
+	// Hide profiles not seen in over 30 days
+	const staleThreshold = Date.now() - 30 * 24 * 60 * 60 * 1000;
 
 	const matching = allProfiles.filter(p => {
 		if (!p.geohashCells) return false;
