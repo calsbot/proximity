@@ -22,7 +22,7 @@
 	let myDid = $derived($identityStore.identity?.did);
 	let identityLoading = $derived($identityStore.loading);
 
-	// Parse fragment on mount
+	// Parse fragment on mount (runs once)
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		const hash = window.location.hash.slice(1);
@@ -46,17 +46,6 @@
 				error = 'this link has expired.';
 				loading = false;
 			});
-
-		// Fallback: if identity store is empty, try loading from IndexedDB directly
-		// (layout may have set it to null if ensureRegistered failed)
-		if (!$identityStore.identity && !$identityStore.loading) {
-			loadIdentityFromStorage().then(existing => {
-				if (existing) {
-					cacheIdentityInSession(existing);
-					identityStore.set({ identity: existing, loading: false, error: null });
-				}
-			}).catch(() => {});
-		}
 	});
 
 	async function handleEnter() {
