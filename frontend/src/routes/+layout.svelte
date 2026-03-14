@@ -222,6 +222,7 @@
 			<a href="/profile/edit" class="nav-item" class:active={activeNav === 'profile'}>
 				<span class="nav-label">profile</span>
 			</a>
+			<a href="https://cryptpad.fr/form/#/2/form/view/44z61IFZ7azDQnYRFB5RsGOlP8n29vV2CpfU7PQe2ow/" target="_blank" rel="noopener" class="nav-report">report</a>
 		</nav>
 	{/if}
 </div>
@@ -305,6 +306,14 @@
 		padding: 2px 4px;
 		margin-left: 6px;
 		line-height: 1;
+	}
+	.nav-report {
+		position: absolute;
+		right: 12px;
+		font-size: 11px;
+		color: var(--text-tertiary);
+		text-decoration: none;
+		padding: 4px 6px;
 	}
 
 	.offline-banner {
